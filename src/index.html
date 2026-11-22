@@ -1,0 +1,289 @@
+<!doctype html>
+<!--
+  src/index.html — GitWave source template (built into gitwave.html).
+
+  `npm run build` bundles src/main.js, the demo fixture and src/styles/app.css
+  into one self-contained file at the repo root; open that file directly.
+
+  The instrument is read-only: every gesture changes the view, never the
+  repository. `SOURCE` loads or saves a `.gitwave` snapshot; `copy show` and
+  the PR tray copy a git command and never execute it.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>GitWave — repositories as wavetables</title>
+<link rel="stylesheet" href="/styles/app.css" />
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <button class="op op-icon" id="treeToggle" type="button" aria-pressed="true"
+            title="Toggle Git source tree sidebar (B)" aria-label="Toggle source tree">
+      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+        <path fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"
+              d="M2.5 3.5h11M2.5 8h7.5M2.5 12.5h9.5"/>
+      </svg>
+    </button>
+    <div class="title">
+      <h1>
+        <span>GitWave</span>
+        <svg class="brand-wave" viewBox="0 0 46 16" width="42" height="14" aria-hidden="true">
+          <path fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
+                d="M1 8 C5 2, 8 14, 12 8 C16 1, 20 15, 25 8 C29 3, 33 13, 37 8 C40 5, 43 10, 45 8"/>
+        </svg>
+      </h1>
+    </div>
+  </div>
+
+  <nav class="mode-switch" role="group" aria-label="View mode">
+    <button class="mode-btn" id="modeRack" type="button" aria-pressed="true"
+            title="3D Oscillator Rack — compare live Git wavetables side by side">rack</button>
+    <button class="mode-btn" id="modeStage" type="button" aria-pressed="false"
+            title="3D Volumetric Stage + Paired 2D Active Slice Scope">stage</button>
+    <button class="mode-btn" id="modeBrowser" type="button" aria-pressed="false"
+            title="Floating 3D Wavetable Browser — explore branches, authors and presets">browser</button>
+    <button class="mode-btn" id="mode2d" type="button" aria-pressed="false"
+            title="2D Multi-Ref History Register">2D</button>
+  </nav>
+
+  <div class="find">
+    <svg class="find-ico" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+      <circle cx="7" cy="7" r="4.8" fill="none" stroke="currentColor" stroke-width="1.5"/>
+      <path d="M10.6 10.6L14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+    </svg>
+    <input id="findInput" type="search" autocomplete="off" spellcheck="false"
+           placeholder="author:… ref:… pr:… text" aria-label="Search commits" />
+    <span id="findCount" class="find-count" role="status" aria-live="polite"></span>
+  </div>
+
+  <div class="version">
+    <label for="version">rel</label>
+    <input id="version" type="range" min="0" max="3" step="1" value="3"
+           aria-label="Release position — drag or wheel to travel between releases" />
+    <output id="versionOut" for="version">now</output>
+  </div>
+
+  <div class="repo-readout" id="repoOut">loading…</div>
+
+  <div class="header-actions">
+    <button class="op sr-toggle" id="depthBtn" type="button" aria-pressed="false" hidden
+            title="Toggle 3D mode (D)">3D</button>
+    <button class="op theme-trigger" id="themeBtn" type="button" aria-haspopup="menu" aria-expanded="false"
+            title="Colour theme (T cycles)">
+      <span class="theme-trigger-dot" id="themeDot"></span>
+      <span id="themeLabel">Emerald Signal</span>
+      <span class="theme-caret">▾</span>
+    </button>
+    <button class="op op-icon" id="helpBtn" type="button" aria-expanded="false" aria-controls="helpPanel"
+            aria-keyshortcuts="?" title="Keyboard map and the model (?)">?</button>
+  </div>
+
+  <div class="theme-menu" id="themeMenu" role="menu" aria-label="Colour theme" hidden></div>
+</header>
+
+<div class="workspace" id="workspace">
+  <!-- Kilohearts-inspired Git Tree / Source Sidebar -->
+  <aside class="git-tree" id="gitTree" aria-label="Git source tree">
+    <div class="tree-head">
+      <span class="tree-head-tag">01 // SOURCES</span>
+      <button class="op op-xs" id="treeBrowserBtn" type="button" title="Browse all wavetables in grid">grid</button>
+    </div>
+    <div class="tree-body" id="gitTreeBody"></div>
+  </aside>
+
+  <main class="studio-main">
+    <section class="stage" id="stage" aria-label="wavetable stage">
+      <!-- Floating top stage telemetry bar -->
+      <div class="stage-bar" role="group" aria-label="focused ref">
+        <label class="mini-label" for="refSelect">ref</label>
+        <select id="refSelect" aria-label="Focused ref"></select>
+        <span class="stage-focus" id="focusOut">—</span>
+        <span class="stage-window" id="windowOut">—</span>
+        <button class="op op-xs" id="backBtn" type="button" hidden title="Back to the oscillator rack">rack</button>
+        <button class="op op-xs" id="splitAuthor" type="button" hidden title="Add a module per author of this filter">+author</button>
+        <button class="op op-xs" id="splitRef" type="button" hidden title="Add a module per ref of this filter">+ref</button>
+      </div>
+
+      <div class="legend" id="legend" aria-label="Visible refs"></div>
+
+      <!-- Primary canvas viewport: Hero 3D wavetable (stage mode) or 2D multi-ref wave (2D mode) -->
+      <div class="stage-viewport" id="stageViewport">
+        <canvas id="wave" role="img" aria-label="GitWave wavetable canvas"></canvas>
+        <div class="stage-knobs" id="stageKnobs" hidden aria-label="3D wavetable controls"></div>
+      </div>
+
+      <!-- Warpenter Paired 2D Active Slice Oscilloscope (visible in Stage mode) -->
+      <div class="scope2d-wrap" id="scope2dWrap" hidden aria-label="Active 2D wavetable slice oscilloscope">
+        <canvas id="scope2d" aria-hidden="true"></canvas>
+      </div>
+
+      <!-- Serum / Vital 3D Oscillator Rack -->
+      <div class="rack" id="rack" role="region" aria-label="Oscillator rack — one module per filter" hidden></div>
+
+      <!-- Kilohearts Borderless Floating 3D Wavetable Browser Grid -->
+      <div class="browser" id="browser" role="region" aria-label="Wavetable browser grid" hidden></div>
+
+      <div class="hint" id="hint">drag wavetable to scrub · double-click to expand · space to play</div>
+
+      <section class="tray" id="prTray" role="dialog" aria-label="Open pull requests" hidden>
+        <div class="tray-head">
+          <h2>open pull requests</h2>
+          <button class="op op-xs" id="trayClose" type="button" aria-label="Close the pull request list">×</button>
+        </div>
+        <div id="trayList"></div>
+      </section>
+    </section>
+
+    <!-- Ref #3 Multi-Slice Overview Filmstrip (aligned to 2D wave geometry) -->
+    <section class="strip" aria-label="commit overview strip">
+      <div class="strip-head">
+        <span id="stripMode">OVERVIEW · 32 SLICES · DRAG TO SELECT</span>
+        <span id="stripRange">—</span>
+      </div>
+      <div class="slots" id="slots"></div>
+    </section>
+
+    <!-- Ref #3 Precision Inspector & Transport Deck -->
+    <section class="dock" aria-label="inspector and controls">
+      <!-- 01 // COMMIT INSPECTOR -->
+      <article class="dock-card commit-card" aria-label="focused commit">
+        <div class="dock-head">
+          <span class="dock-tag">01 // COMMIT</span>
+          <code class="commit-sha" id="commitSha">—</code>
+          <span class="commit-author" id="commitAuthor"></span>
+          <button class="op op-xs" id="copyCommit" type="button"
+                  title="Copy the git command for this commit (nothing is executed)">copy show</button>
+        </div>
+        <div class="commit-subject" id="commitSubject">no commit focused</div>
+        <div class="commit-stats" id="commitStats"></div>
+      </article>
+
+      <!-- 02 // TENSION & PR QUEUE -->
+      <div class="dock-card tension-deck" aria-label="pull request tension">
+        <div class="dock-head">
+          <span class="dock-tag">02 // TENSION</span>
+          <div class="meta-summary" id="tensionSummary">no open pull requests</div>
+        </div>
+        <div class="tension-body">
+          <div class="tension" id="tension" role="button" tabindex="0"
+               aria-label="Pull request tension — activate to list open pull requests">
+            <canvas id="tensionPad" aria-hidden="true"></canvas>
+            <span class="tension-label">PRs <b id="tensionCount">0</b></span>
+          </div>
+          <div class="pr-queue" id="prQueue" aria-label="Open pull request queue"></div>
+        </div>
+      </div>
+
+      <!-- 03 // TRANSPORT & SOURCE -->
+      <div class="dock-card controls" aria-label="controls">
+        <div class="dock-head">
+          <span class="dock-tag">03 // TRANSPORT &amp; SOURCE</span>
+          <span class="status" id="status" role="status" aria-live="polite"></span>
+        </div>
+        <div class="controls-rows">
+          <div class="group" role="group" aria-label="motion">
+            <button class="op op-play" id="lfoBtn" type="button" aria-pressed="false"
+                    title="Play the read head through history (Space)">▶ LFO</button>
+            <select id="modeSelect" aria-label="LFO motion">
+              <option value="sweep">sweep ↻</option>
+              <option value="bounce">bounce ⇄</option>
+              <option value="once">once ⏭</option>
+            </select>
+            <select id="rateSelect" aria-label="LFO rate">
+              <option value="1">1/s</option>
+              <option value="2">2/s</option>
+              <option value="4" selected>4/s</option>
+              <option value="8">8/s</option>
+            </select>
+            <select id="spanSelect" aria-label="Window span">
+              <option value="7d">7d</option>
+              <option value="30d">30d</option>
+              <option value="90d" selected>90d</option>
+              <option value="all">all</option>
+            </select>
+            <button class="op op-xs" id="prevBtn" type="button" aria-label="Older" title="Older (←)">◀</button>
+            <button class="op op-xs" id="nextBtn" type="button" aria-label="Newer" title="Newer (→)">▶</button>
+            <button class="op op-xs" id="nowBtn" type="button" title="Return to the newest commit">now</button>
+            <span class="excount" id="slotCount" hidden>32 slots</span>
+          </div>
+
+          <div class="group group-bottom" role="group" aria-label="lens and source">
+            <button class="op op-xs" id="lensAge" type="button" aria-pressed="true"
+                    title="Dim idle branches and colour PRs by age">age</button>
+            <button class="op op-xs" id="lensAgents" type="button" aria-pressed="false"
+                    title="Dim human-only waves to reveal agent activity">agents</button>
+            <button class="op op-xs" id="lensPrs" type="button" aria-pressed="true"
+                    title="Show pull-request markers and tension">PRs</button>
+            <span class="group-sep" aria-hidden="true"></span>
+            <button class="op op-xs" id="demoBtn" type="button" title="Reload the bundled demo history">demo</button>
+            <button class="op op-xs" id="openBtn" type="button" title="Open a .gitwave snapshot">open</button>
+            <input id="openFile" type="file" accept=".gitwave,.json,application/json" hidden />
+            <button class="op op-xs" id="saveBtn" type="button" title="Save the loaded document as .gitwave">save</button>
+            <button class="op op-xs" id="linkBtn" type="button" title="Copy a link to this exact view">link</button>
+          </div>
+        </div>
+        <span id="liveStatus" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></span>
+      </div>
+    </section>
+  </main>
+</div>
+
+<aside class="help-panel" id="helpPanel" hidden aria-label="Help">
+  <button class="op op-xs help-close" id="helpClose" type="button" aria-label="Close help">×</button>
+  <div class="help-tabs" role="tablist" aria-label="Help sections">
+    <button class="op op-xs" id="helpTabKeys" type="button" role="tab" aria-selected="true"
+            aria-controls="helpKeys" data-tab="keys">keys</button>
+    <button class="op op-xs" id="helpTabAbout" type="button" role="tab" aria-selected="false"
+            aria-controls="helpAbout" data-tab="about">about</button>
+  </div>
+
+  <div id="helpKeys" role="tabpanel" aria-labelledby="helpTabKeys">
+    <h2>keys &amp; gestures</h2>
+    <dl class="help-list">
+      <dt>drag 3D</dt><dd>scrub WT POS in Rack, or smoothly orbit 3D perspective in Stage (dbl-click resets)</dd>
+      <dt>wheel</dt><dd>travel one sample (Shift = a day, Ctrl/Cmd = zoom the span)</dd>
+      <dt>/</dt><dd>search commits — enter steps matches, shift+enter steps back</dd>
+      <dt>D</dt><dd>toggle 3D / 2D modes</dd>
+      <dt>B</dt><dd>toggle the Git source tree sidebar</dd>
+      <dt>← / →</dt><dd>older / newer by one sample</dd>
+      <dt>Home / End</dt><dd>oldest / newest</dd>
+      <dt>Space</dt><dd>play or pause the LFO transport</dd>
+      <dt>Alt+1…8</dt><dd>focus a visible ref by slot</dd>
+      <dt>T</dt><dd>cycle the colour theme</dd>
+      <dt>P</dt><dd>open or close the pull-request tray</dd>
+      <dt>Esc</dt><dd>close a menu, the tray or help</dd>
+      <dt>?</dt><dd>this panel</dd>
+    </dl>
+    <h3>how to read it</h3>
+    <p><b>Rack</b> renders saved Git filters side by side as sculpted 3D wavetable oscillators.
+      Use <code>‹ ›</code> to cycle sources, drag across any wavetable or turn <b>WT POS</b>,
+      <b>DEPTH</b> and <b>SMOOTH</b> knobs to sculpt the view, or double-click to expand.</p>
+    <p><b>Stage</b> pairs the full volumetric 3D wavetable (drag to orbit) with a real-time
+      <b>2D Active Slice Oscilloscope</b> synced 1:1 to the travelling amber playhead.
+      <b>Browser</b> opens the borderless 3D gallery of every branch, author and preset.</p>
+  </div>
+
+  <div id="helpAbout" role="tabpanel" aria-labelledby="helpTabAbout" hidden>
+    <h2>about gitwave</h2>
+    <p><b>Read-only by design.</b> Every gesture navigates, selects or filters. Action
+      buttons only copy a git command; nothing is executed and no network call is made.</p>
+    <p>Real commit churn, merge cadence and agent activity from the frozen `.gitwave`
+      history drive every 3D wavetable slice, 2D register wave and tension vector.</p>
+    <h3>the data</h3>
+    <p>The bundled history is a deterministic fictional repository, <b>Orbit Notes</b>:
+      six refs, three releases, five pull requests and 46 agent-authored commits. The
+      snapshot time is fixed at <b>2026-11-01 18:00 UTC</b>. Open a <b>.gitwave</b> snapshot to replace it.</p>
+    <p class="muted">schema 1 · view schema 1 · offline single-file · no telemetry</p>
+  </div>
+</aside>
+
+<!-- Hidden mirrors for headless verification and agent-shaped readers. -->
+<pre id="gitwave-state" data-schema-version="1" hidden></pre>
+<pre id="gitwave-selftest" hidden></pre>
+
+<script type="module" src="/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,3649 @@
+{
+  "schemaVersion": 1,
+  "tool": "gitwave",
+  "generatedBy": "tools/make-demo.mjs",
+  "repo": {
+    "id": "orbit-notes",
+    "name": "Orbit Notes",
+    "defaultRef": "main",
+    "snapshotAt": "2026-11-01T18:00:00Z",
+    "span": {
+      "from": "2026-05-04T19:33:00Z",
+      "to": "2026-11-01T18:00:00Z"
+    }
+  },
+  "refs": [
+    {
+      "id": "main",
+      "name": "main",
+      "kind": "trunk",
+      "base": null,
+      "tip": "5e4093b286c14b9197098fc82e6032850cb7bea9",
+      "createdAt": "2026-05-04T19:33:00Z",
+      "mergedAt": null,
+      "colorKey": 0,
+      "pr": null
+    },
+    {
+      "id": "chore/ci",
+      "name": "chore/ci",
+      "kind": "branch",
+      "base": "main",
+      "tip": "df9d30b612e7e301d5c4c744594f76e7e71bb6fe",
+      "createdAt": "2026-07-08T23:14:00Z",
+      "mergedAt": "2026-07-14T09:30:00Z",
+      "colorKey": 5,
+      "pr": {
+        "number": 4,
+        "title": "CI: cache the test runner",
+        "state": "merged",
+        "review": "approved",
+        "checks": "passing",
+        "conflicts": false,
+        "draft": false,
+        "mergedAt": "2026-07-14T09:30:00Z"
+      }
+    },
+    {
+      "id": "docs/site",
+      "name": "docs/site",
+      "kind": "branch",
+      "base": "main",
+      "tip": "80743885ee5c2a7e3993ec98ae82588cdd22a847",
+      "createdAt": "2026-06-23T08:28:00Z",
+      "mergedAt": "2026-10-26T16:00:00Z",
+      "colorKey": 4,
+      "pr": {
+        "number": 9,
+        "title": "Docs: local-first guide and release notes",
+        "state": "merged",
+        "review": "approved",
+        "checks": "passing",
+        "conflicts": false,
+        "draft": false,
+        "mergedAt": "2026-10-26T16:00:00Z"
+      }
+    },
+    {
+      "id": "agent/refactor-store",
+      "name": "agent/refactor-store",
+      "kind": "branch",
+      "base": "main",
+      "tip": "11582d3aea88a39374302dd6b8cfa2082049bf97",
+      "createdAt": "2026-09-02T23:43:00Z",
+      "mergedAt": null,
+      "colorKey": 3,
+      "pr": {
+        "number": 15,
+        "title": "Agent: extract the note store from the app shell",
+        "state": "draft",
+        "review": "none",
+        "checks": "pending",
+        "conflicts": false,
+        "draft": true,
+        "mergedAt": null
+      }
+    },
+    {
+      "id": "feat/editor",
+      "name": "feat/editor",
+      "kind": "branch",
+      "base": "main",
+      "tip": "056a5e4b60a82f3a6890597e54d74b97ad387188",
+      "createdAt": "2026-09-09T05:17:00Z",
+      "mergedAt": null,
+      "colorKey": 1,
+      "pr": {
+        "number": 12,
+        "title": "Editor: inline marks and the slash menu",
+        "state": "open",
+        "review": "required",
+        "checks": "passing",
+        "conflicts": false,
+        "draft": false,
+        "mergedAt": null
+      }
+    },
+    {
+      "id": "fix/sync-race",
+      "name": "fix/sync-race",
+      "kind": "branch",
+      "base": "main",
+      "tip": "c7518266f8209cfbf6ea2cebb0ecd64cc853b96e",
+      "createdAt": "2026-10-12T12:45:00Z",
+      "mergedAt": null,
+      "colorKey": 2,
+      "pr": {
+        "number": 14,
+        "title": "Fix: sync race when an offline note resumes",
+        "state": "open",
+        "review": "changes_requested",
+        "checks": "failing",
+        "conflicts": true,
+        "draft": false,
+        "mergedAt": null
+      }
+    }
+  ],
+  "commits": [
+    {
+      "sha": "e3f9a9a07895be94c27bdc2b886c2dee81063dbe",
+      "parents": [],
+      "time": "2026-05-04T19:33:00Z",
+      "author": {
+        "name": "Ravi Patel",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "fix: stale note title in the header",
+      "insertions": 3,
+      "deletions": 0,
+      "files": 6,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "339bbb5115531a7e93ab7a5d3d65463dfc634f9a",
+      "parents": [
+        "e3f9a9a07895be94c27bdc2b886c2dee81063dbe"
+      ],
+      "time": "2026-05-06T23:31:00Z",
+      "author": {
+        "name": "dsh/lead",
+        "kind": "agent"
+      },
+      "agent": {
+        "runtime": "dsh",
+        "model": "flash"
+      },
+      "subject": "docs: note model and sync rules",
+      "insertions": 13,
+      "deletions": 3,
+      "files": 4,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "8e4650fb5dbd94431a020b4b8af748e1bdb81bb2",
+      "parents": [
+        "339bbb5115531a7e93ab7a5d3d65463dfc634f9a"
+      ],
+      "time": "2026-05-08T17:45:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "fix: duplicate tag rendering",
+      "insertions": 3,
+      "deletions": 1,
+      "files": 6,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "9039afad432757fed1e10b6cc8f905d378d12c34",
+      "parents": [
+        "8e4650fb5dbd94431a020b4b8af748e1bdb81bb2"
+      ],
+      "time": "2026-05-10T09:55:00Z",
+      "author": {
+        "name": "dsh/lead",
+        "kind": "agent"
+      },
+      "agent": {
+        "runtime": "dsh",
+        "model": "flash"
+      },
+      "subject": "fix: duplicate tag rendering",
+      "insertions": 7,
+      "deletions": 5,
+      "files": 6,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "a42b1d964d7e1b87cf4eae1366bc3e0f8ae901bc",
+      "parents": [
+        "9039afad432757fed1e10b6cc8f905d378d12c34"
+      ],
+      "time": "2026-05-12T05:43:00Z",
+      "author": {
+        "name": "dsh/lead",
+        "kind": "agent"
+      },
+      "agent": {
+        "runtime": "dsh",
+        "model": "flash"
+      },
+      "subject": "fix: sync loop on reconnect",
+      "insertions": 16,
+      "deletions": 3,
+      "files": 3,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "a89c5c914dad11971616f7b1e76d7f73e2f4d798",
+      "parents": [
+        "a42b1d964d7e1b87cf4eae1366bc3e0f8ae901bc"
+      ],
+      "time": "2026-05-14T01:10:00Z",
+      "author": {
+        "name": "Ravi Patel",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "fix: debounce the search field",
+      "insertions": 14,
+      "deletions": 2,
+      "files": 5,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "eff4cd8bd2fa37c0cb2b8ad0931ae4fbe79f6ca2",
+      "parents": [
+        "a89c5c914dad11971616f7b1e76d7f73e2f4d798"
+      ],
+      "time": "2026-05-16T11:39:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "feat: markdown paste normaliser",
+      "insertions": 5,
+      "deletions": 0,
+      "files": 5,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "ae8e035ec2b098833b892b4efa2db412abab32e5",
+      "parents": [
+        "eff4cd8bd2fa37c0cb2b8ad0931ae4fbe79f6ca2"
+      ],
+      "time": "2026-05-17T09:11:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "fix: escape closes the wrong overlay",
+      "insertions": 8,
+      "deletions": 2,
+      "files": 2,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "19427d3d18d1f992fb06a4d2468b8003efd1c265",
+      "parents": [
+        "ae8e035ec2b098833b892b4efa2db412abab32e5"
+      ],
+      "time": "2026-05-20T05:35:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "fix: focus lost when the palette closes",
+      "insertions": 4,
+      "deletions": 2,
+      "files": 4,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "0e90ea59f7b47b37a268b1add8b3381e73a97b31",
+      "parents": [
+        "19427d3d18d1f992fb06a4d2468b8003efd1c265"
+      ],
+      "time": "2026-05-21T05:45:00Z",
+      "author": {
+        "name": "Ravi Patel",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "feat: command palette search",
+      "insertions": 8,
+      "deletions": 3,
+      "files": 5,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "598ae0327739db16823eab52a6071790ab6987ca",
+      "parents": [
+        "0e90ea59f7b47b37a268b1add8b3381e73a97b31"
+      ],
+      "time": "2026-05-23T20:19:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "chore: nightly dependency audit",
+      "insertions": 3,
+      "deletions": 2,
+      "files": 3,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "24b7f31f36b1e79b48d4cbbdd0e4157256014c55",
+      "parents": [
+        "598ae0327739db16823eab52a6071790ab6987ca"
+      ],
+      "time": "2026-05-25T07:16:00Z",
+      "author": {
+        "name": "dsh/lead",
+        "kind": "agent"
+      },
+      "agent": {
+        "runtime": "dsh",
+        "model": "flash"
+      },
+      "subject": "docs: note model and sync rules",
+      "insertions": 11,
+      "deletions": 3,
+      "files": 7,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "fd90705fc32a6cad1d6e6932ab132a6e32f1aaf8",
+      "parents": [
+        "24b7f31f36b1e79b48d4cbbdd0e4157256014c55"
+      ],
+      "time": "2026-05-26T19:57:00Z",
+      "author": {
+        "name": "Ravi Patel",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "feat: keyboard-first note switcher",
+      "insertions": 7,
+      "deletions": 1,
+      "files": 4,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "627b54ee605ce0f225776baac7f4f8bf564ac03f",
+      "parents": [
+        "fd90705fc32a6cad1d6e6932ab132a6e32f1aaf8"
+      ],
+      "time": "2026-05-29T04:51:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "feat: drag to reorder blocks",
+      "insertions": 5,
+      "deletions": 3,
+      "files": 1,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "5a2bc52f0015f90f76375e128f9112f86a03d5b7",
+      "parents": [
+        "627b54ee605ce0f225776baac7f4f8bf564ac03f"
+      ],
+      "time": "2026-05-30T13:32:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "fix: debounce the search field",
+      "insertions": 6,
+      "deletions": 2,
+      "files": 3,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "7970af215d8ab5c8163d3b6aa06b1b97dd22aa76",
+      "parents": [
+        "5a2bc52f0015f90f76375e128f9112f86a03d5b7"
+      ],
+      "time": "2026-06-01T00:13:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "feat: markdown paste normaliser",
+      "insertions": 2,
+      "deletions": 1,
+      "files": 4,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "a41afcd33261d2c88823d5b504797ea76f7e49ae",
+      "parents": [
+        "7970af215d8ab5c8163d3b6aa06b1b97dd22aa76"
+      ],
+      "time": "2026-06-03T16:04:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "feat: drag to reorder blocks",
+      "insertions": 3,
+      "deletions": 1,
+      "files": 6,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "742e630de5b4550a64eab9fd984947f4f5d70a51",
+      "parents": [
+        "a41afcd33261d2c88823d5b504797ea76f7e49ae"
+      ],
+      "time": "2026-06-05T15:47:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "feat: markdown paste normaliser",
+      "insertions": 10,
+      "deletions": 2,
+      "files": 3,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "9a1c8b3480be1c577fdb9c0a27cb77172fe57328",
+      "parents": [
+        "742e630de5b4550a64eab9fd984947f4f5d70a51"
+      ],
+      "time": "2026-06-07T12:06:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "fix: focus lost when the palette closes",
+      "insertions": 2,
+      "deletions": 1,
+      "files": 8,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "b7592f3c5ed370d27cf0c4f9ddbb020b4b906c44",
+      "parents": [
+        "9a1c8b3480be1c577fdb9c0a27cb77172fe57328"
+      ],
+      "time": "2026-06-08T19:39:00Z",
+      "author": {
+        "name": "Ravi Patel",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "fix: duplicate tag rendering",
+      "insertions": 5,
+      "deletions": 1,
+      "files": 7,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "b209ca391756af0381d24d088abc9349f3e51d18",
+      "parents": [
+        "b7592f3c5ed370d27cf0c4f9ddbb020b4b906c44"
+      ],
+      "time": "2026-06-10T03:25:00Z",
+      "author": {
+        "name": "Ravi Patel",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "docs: release checklist",
+      "insertions": 14,
+      "deletions": 4,
+      "files": 8,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "7a5549a773c657c1c57191128443bbc6ef539970",
+      "parents": [
+        "b209ca391756af0381d24d088abc9349f3e51d18"
+      ],
+      "time": "2026-06-12T21:53:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "feat: backlinks panel on the note page",
+      "insertions": 6,
+      "deletions": 1,
+      "files": 8,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "9afa009931af34416655c56b4124cf51ab1a5d91",
+      "parents": [
+        "7a5549a773c657c1c57191128443bbc6ef539970"
+      ],
+      "time": "2026-06-14T02:56:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "feat: drag to reorder blocks",
+      "insertions": 6,
+      "deletions": 2,
+      "files": 8,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "c489e76b7fb39b9083f4e92b055fc8cbffbbbc51",
+      "parents": [
+        "9afa009931af34416655c56b4124cf51ab1a5d91"
+      ],
+      "time": "2026-06-16T16:49:00Z",
+      "author": {
+        "name": "Ravi Patel",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "feat: markdown paste normaliser",
+      "insertions": 3,
+      "deletions": 0,
+      "files": 3,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "c50fb96253dd4c44262268822189c3fb2e9754c8",
+      "parents": [
+        "c489e76b7fb39b9083f4e92b055fc8cbffbbbc51"
+      ],
+      "time": "2026-06-18T05:47:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "chore: cache the test runner",
+      "insertions": 8,
+      "deletions": 1,
+      "files": 3,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "738cc3730b6f65e9377dd83f517ac3095fb5f8a7",
+      "parents": [
+        "c50fb96253dd4c44262268822189c3fb2e9754c8"
+      ],
+      "time": "2026-06-19T15:21:00Z",
+      "author": {
+        "name": "Ravi Patel",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "fix: scroll position after block delete",
+      "insertions": 4,
+      "deletions": 1,
+      "files": 3,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "e4fcb973330db0d07a603765f3fcf08de7bf2721",
+      "parents": [
+        "738cc3730b6f65e9377dd83f517ac3095fb5f8a7"
+      ],
+      "time": "2026-06-21T11:27:00Z",
+      "author": {
+        "name": "dsh/lead",
+        "kind": "agent"
+      },
+      "agent": {
+        "runtime": "dsh",
+        "model": "flash"
+      },
+      "subject": "feat: markdown paste normaliser",
+      "insertions": 3,
+      "deletions": 3,
+      "files": 8,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "20cb1fc1964fe87666aa1521b1f10ee1fe0e1ad1",
+      "parents": [
+        "e4fcb973330db0d07a603765f3fcf08de7bf2721"
+      ],
+      "time": "2026-06-23T08:28:00Z",
+      "author": {
+        "name": "Ravi Patel",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "docs: note model and sync rules",
+      "insertions": 9,
+      "deletions": 2,
+      "files": 3,
+      "refs": [
+        "docs/site"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "7588a6f1da104fd2fb712135d2e713ea18ac7d6b",
+      "parents": [
+        "e4fcb973330db0d07a603765f3fcf08de7bf2721"
+      ],
+      "time": "2026-06-23T13:51:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "fix: caret jumps after paste",
+      "insertions": 6,
+      "deletions": 5,
+      "files": 1,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "f265334fcc8fe50398faad7c11b705e84c3edcde",
+      "parents": [
+        "7588a6f1da104fd2fb712135d2e713ea18ac7d6b"
+      ],
+      "time": "2026-06-25T01:10:00Z",
+      "author": {
+        "name": "dsh/lead",
+        "kind": "agent"
+      },
+      "agent": {
+        "runtime": "dsh",
+        "model": "flash"
+      },
+      "subject": "feat: inline marks in the editor",
+      "insertions": 6,
+      "deletions": 1,
+      "files": 3,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "f18e6c9879c62addfee4f1ce7f1f1313e035648b",
+      "parents": [
+        "f265334fcc8fe50398faad7c11b705e84c3edcde"
+      ],
+      "time": "2026-06-26T13:50:00Z",
+      "author": {
+        "name": "Ravi Patel",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "fix: scroll position after block delete",
+      "insertions": 5,
+      "deletions": 2,
+      "files": 6,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "7a6a6c045a53fcf29f9a27e7fb3b4c32b2e97732",
+      "parents": [
+        "f18e6c9879c62addfee4f1ce7f1f1313e035648b"
+      ],
+      "time": "2026-06-28T16:51:00Z",
+      "author": {
+        "name": "dsh/lead",
+        "kind": "agent"
+      },
+      "agent": {
+        "runtime": "dsh",
+        "model": "flash"
+      },
+      "subject": "chore: cache the test runner",
+      "insertions": 11,
+      "deletions": 2,
+      "files": 7,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "6dcfe5346148c0cb9c2601987f9dc5df261d7ee1",
+      "parents": [
+        "20cb1fc1964fe87666aa1521b1f10ee1fe0e1ad1"
+      ],
+      "time": "2026-06-29T03:15:00Z",
+      "author": {
+        "name": "Ravi Patel",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "docs: local-first tradeoffs",
+      "insertions": 4,
+      "deletions": 1,
+      "files": 3,
+      "refs": [
+        "docs/site"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "45eb21076611eafa767d786a92d24072cfc5e30c",
+      "parents": [
+        "7a6a6c045a53fcf29f9a27e7fb3b4c32b2e97732"
+      ],
+      "time": "2026-06-30T21:02:00Z",
+      "author": {
+        "name": "dsh/lead",
+        "kind": "agent"
+      },
+      "agent": {
+        "runtime": "dsh",
+        "model": "flash"
+      },
+      "subject": "docs: note model and sync rules",
+      "insertions": 7,
+      "deletions": 6,
+      "files": 3,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "4c928eecd3685b5e7efc228d8c1c2760991438a5",
+      "parents": [
+        "45eb21076611eafa767d786a92d24072cfc5e30c"
+      ],
+      "time": "2026-07-02T21:06:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "feat: drag to reorder blocks",
+      "insertions": 2,
+      "deletions": 3,
+      "files": 5,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "b4b3c35c146e33d1b82cf09a78c86aabb664fcfb",
+      "parents": [
+        "4c928eecd3685b5e7efc228d8c1c2760991438a5"
+      ],
+      "time": "2026-07-03T21:20:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "chore: pin formatter and lint config",
+      "insertions": 14,
+      "deletions": 5,
+      "files": 3,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "de3c80b08a17091977c4cdec08b66dbb5fcca2f9",
+      "parents": [
+        "b4b3c35c146e33d1b82cf09a78c86aabb664fcfb"
+      ],
+      "time": "2026-07-06T07:02:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "feat: drag to reorder blocks",
+      "insertions": 3,
+      "deletions": 2,
+      "files": 6,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "694895743a67db01e00377a84212ceb294f074e2",
+      "parents": [
+        "de3c80b08a17091977c4cdec08b66dbb5fcca2f9"
+      ],
+      "time": "2026-07-08T01:26:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "fix: focus lost when the palette closes",
+      "insertions": 6,
+      "deletions": 2,
+      "files": 4,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "96eb6a4853e749aab98d4fb1adb2f7615b77d24c",
+      "parents": [
+        "694895743a67db01e00377a84212ceb294f074e2"
+      ],
+      "time": "2026-07-08T23:14:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "chore: pin formatter and lint config",
+      "insertions": 7,
+      "deletions": 1,
+      "files": 8,
+      "refs": [
+        "chore/ci"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "5c6cdfa903a36deda0f78e767a493768480143ba",
+      "parents": [
+        "694895743a67db01e00377a84212ceb294f074e2"
+      ],
+      "time": "2026-07-09T12:21:00Z",
+      "author": {
+        "name": "dsh/lead",
+        "kind": "agent"
+      },
+      "agent": {
+        "runtime": "dsh",
+        "model": "flash"
+      },
+      "subject": "feat: backlinks panel on the note page",
+      "insertions": 11,
+      "deletions": 2,
+      "files": 3,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "0842fae7c9cce395f61ae5e227f2a9671151bcd4",
+      "parents": [
+        "6dcfe5346148c0cb9c2601987f9dc5df261d7ee1"
+      ],
+      "time": "2026-07-09T15:15:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "docs: keyboard map reference",
+      "insertions": 4,
+      "deletions": 3,
+      "files": 4,
+      "refs": [
+        "docs/site"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "cf6bd9e2a6c459b654a66bf9f895fc8218f2f3be",
+      "parents": [
+        "96eb6a4853e749aab98d4fb1adb2f7615b77d24c"
+      ],
+      "time": "2026-07-10T03:43:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "chore: split the bundle by route",
+      "insertions": 4,
+      "deletions": 2,
+      "files": 4,
+      "refs": [
+        "chore/ci"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "0d773a7017bb503e63dc2e3116dcd932d29b4553",
+      "parents": [
+        "5c6cdfa903a36deda0f78e767a493768480143ba"
+      ],
+      "time": "2026-07-11T11:03:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "feat: drag to reorder blocks",
+      "insertions": 7,
+      "deletions": 1,
+      "files": 1,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "2cf2b51b1cdbdd8c996fd76d83de4698fffba64c",
+      "parents": [
+        "cf6bd9e2a6c459b654a66bf9f895fc8218f2f3be"
+      ],
+      "time": "2026-07-11T21:34:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "chore: cache the test runner",
+      "insertions": 4,
+      "deletions": 3,
+      "files": 8,
+      "refs": [
+        "chore/ci"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "df9d30b612e7e301d5c4c744594f76e7e71bb6fe",
+      "parents": [
+        "2cf2b51b1cdbdd8c996fd76d83de4698fffba64c"
+      ],
+      "time": "2026-07-13T01:15:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "chore: drop the unused polyfill",
+      "insertions": 6,
+      "deletions": 1,
+      "files": 4,
+      "refs": [
+        "chore/ci"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "6b5b2d46e2c474ae177298b3a22bd119c4c3139e",
+      "parents": [
+        "0d773a7017bb503e63dc2e3116dcd932d29b4553"
+      ],
+      "time": "2026-07-13T22:11:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "feat: keyboard-first note switcher",
+      "insertions": 3,
+      "deletions": 1,
+      "files": 1,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "9bc36279bc97ca081c02f134ac701272786197f1",
+      "parents": [
+        "6b5b2d46e2c474ae177298b3a22bd119c4c3139e",
+        "df9d30b612e7e301d5c4c744594f76e7e71bb6fe"
+      ],
+      "time": "2026-07-14T09:30:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "Merge branch 'chore/ci'",
+      "insertions": 0,
+      "deletions": 0,
+      "files": 0,
+      "refs": [
+        "main"
+      ],
+      "merge": true
+    },
+    {
+      "sha": "24affcc394cdbb1e065e7d10fce8bca3046fce82",
+      "parents": [
+        "9bc36279bc97ca081c02f134ac701272786197f1"
+      ],
+      "time": "2026-07-15T08:16:00Z",
+      "author": {
+        "name": "dsh/lead",
+        "kind": "agent"
+      },
+      "agent": {
+        "runtime": "dsh",
+        "model": "flash"
+      },
+      "subject": "fix: stale note title in the header",
+      "insertions": 6,
+      "deletions": 1,
+      "files": 6,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "496455f15e21b5b71fe05487dbc3fbc56143cdc2",
+      "parents": [
+        "24affcc394cdbb1e065e7d10fce8bca3046fce82"
+      ],
+      "time": "2026-07-17T19:33:00Z",
+      "author": {
+        "name": "Ravi Patel",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "fix: escape closes the wrong overlay",
+      "insertions": 5,
+      "deletions": 3,
+      "files": 2,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "8317ac03736d03d0f3864a2c8638574bfac21665",
+      "parents": [
+        "496455f15e21b5b71fe05487dbc3fbc56143cdc2"
+      ],
+      "time": "2026-07-18T23:29:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "chore: cache the test runner",
+      "insertions": 10,
+      "deletions": 4,
+      "files": 3,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "52a6ec8c014f67c9edd9bd2ce92e53bb953d0d4a",
+      "parents": [
+        "0842fae7c9cce395f61ae5e227f2a9671151bcd4"
+      ],
+      "time": "2026-07-20T00:03:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "docs: release checklist",
+      "insertions": 6,
+      "deletions": 1,
+      "files": 8,
+      "refs": [
+        "docs/site"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "bc4a503025cfd0e8b462bd41e5d3c23b6b6eea49",
+      "parents": [
+        "8317ac03736d03d0f3864a2c8638574bfac21665"
+      ],
+      "time": "2026-07-20T15:25:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "fix: duplicate tag rendering",
+      "insertions": 12,
+      "deletions": 3,
+      "files": 3,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "26728947f370e37d1b9300833f713781f67eccd8",
+      "parents": [
+        "bc4a503025cfd0e8b462bd41e5d3c23b6b6eea49"
+      ],
+      "time": "2026-07-23T08:19:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "docs: keyboard map reference",
+      "insertions": 7,
+      "deletions": 2,
+      "files": 3,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "562f0fe487b5d0db8be7a6a738180b05860c80ea",
+      "parents": [
+        "26728947f370e37d1b9300833f713781f67eccd8"
+      ],
+      "time": "2026-07-24T02:33:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "feat: keyboard-first note switcher",
+      "insertions": 10,
+      "deletions": 2,
+      "files": 2,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "015903bb4052fd8ecc3cfa767c440756f7440057",
+      "parents": [
+        "52a6ec8c014f67c9edd9bd2ce92e53bb953d0d4a"
+      ],
+      "time": "2026-07-26T10:28:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "docs: editor extension guide",
+      "insertions": 5,
+      "deletions": 1,
+      "files": 3,
+      "refs": [
+        "docs/site"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "eff1116d59e2a328e7bcb3d23a35bb6bafb7d67c",
+      "parents": [
+        "562f0fe487b5d0db8be7a6a738180b05860c80ea"
+      ],
+      "time": "2026-07-26T22:04:00Z",
+      "author": {
+        "name": "dsh/lead",
+        "kind": "agent"
+      },
+      "agent": {
+        "runtime": "dsh",
+        "model": "flash"
+      },
+      "subject": "chore: nightly dependency audit",
+      "insertions": 8,
+      "deletions": 3,
+      "files": 5,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "5c1b7f4316c6898aeafe37a43e478f589e871a64",
+      "parents": [
+        "eff1116d59e2a328e7bcb3d23a35bb6bafb7d67c"
+      ],
+      "time": "2026-07-28T16:09:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "chore: split the bundle by route",
+      "insertions": 3,
+      "deletions": 2,
+      "files": 6,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "08d6ed3699cab7ddb88316dedd5f2b9d7b30563a",
+      "parents": [
+        "5c1b7f4316c6898aeafe37a43e478f589e871a64"
+      ],
+      "time": "2026-07-29T16:53:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "chore: nightly dependency audit",
+      "insertions": 3,
+      "deletions": 3,
+      "files": 2,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "59a84ac985eb982603fafd946b8316c56fee3a68",
+      "parents": [
+        "08d6ed3699cab7ddb88316dedd5f2b9d7b30563a"
+      ],
+      "time": "2026-07-31T14:27:00Z",
+      "author": {
+        "name": "dsh/lead",
+        "kind": "agent"
+      },
+      "agent": {
+        "runtime": "dsh",
+        "model": "flash"
+      },
+      "subject": "feat: slash menu for block insertion",
+      "insertions": 8,
+      "deletions": 3,
+      "files": 4,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "0d5606f1c5cc3e697ae183df7e53741b53533ad8",
+      "parents": [
+        "59a84ac985eb982603fafd946b8316c56fee3a68"
+      ],
+      "time": "2026-08-02T04:48:00Z",
+      "author": {
+        "name": "dsh/lead",
+        "kind": "agent"
+      },
+      "agent": {
+        "runtime": "dsh",
+        "model": "flash"
+      },
+      "subject": "fix: caret jumps after paste",
+      "insertions": 2,
+      "deletions": 2,
+      "files": 4,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "bd99f93688b3a0e6ce5b14ad15f1e7e14711c5b9",
+      "parents": [
+        "015903bb4052fd8ecc3cfa767c440756f7440057"
+      ],
+      "time": "2026-08-03T01:25:00Z",
+      "author": {
+        "name": "Ravi Patel",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "docs: note model and sync rules",
+      "insertions": 14,
+      "deletions": 3,
+      "files": 4,
+      "refs": [
+        "docs/site"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "7d903a7cc0318b38aa8e250ac93c589ddc0cadd7",
+      "parents": [
+        "0d5606f1c5cc3e697ae183df7e53741b53533ad8"
+      ],
+      "time": "2026-08-04T11:56:00Z",
+      "author": {
+        "name": "Ravi Patel",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "feat: drag to reorder blocks",
+      "insertions": 6,
+      "deletions": 1,
+      "files": 3,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "3872656b2feae2f8185c7d53e231aa6e0255f136",
+      "parents": [
+        "7d903a7cc0318b38aa8e250ac93c589ddc0cadd7"
+      ],
+      "time": "2026-08-06T01:30:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "feat: slash menu for block insertion",
+      "insertions": 9,
+      "deletions": 1,
+      "files": 3,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "6b0f2d86f9037b643aa05bd6bf5f0a51f77ca5d6",
+      "parents": [
+        "3872656b2feae2f8185c7d53e231aa6e0255f136"
+      ],
+      "time": "2026-08-08T03:26:00Z",
+      "author": {
+        "name": "Ravi Patel",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "fix: focus lost when the palette closes",
+      "insertions": 2,
+      "deletions": 1,
+      "files": 3,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "c1699f2bb79c1273cde7d560f995584f0bde281d",
+      "parents": [
+        "6b0f2d86f9037b643aa05bd6bf5f0a51f77ca5d6"
+      ],
+      "time": "2026-08-09T23:26:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "feat: command palette search",
+      "insertions": 11,
+      "deletions": 4,
+      "files": 3,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "3fb9a274380958ef2a62eb84960bd65e9eac94d8",
+      "parents": [
+        "c1699f2bb79c1273cde7d560f995584f0bde281d"
+      ],
+      "time": "2026-08-12T08:24:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "release: v0.9.0",
+      "insertions": 180,
+      "deletions": 40,
+      "files": 12,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "2252b7b809cae30498030189e78df7be74ae7891",
+      "parents": [
+        "3fb9a274380958ef2a62eb84960bd65e9eac94d8"
+      ],
+      "time": "2026-08-14T05:56:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "docs: keyboard map reference",
+      "insertions": 8,
+      "deletions": 2,
+      "files": 5,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "fc126360e015bc300a50d70d284b0ff395027d0d",
+      "parents": [
+        "bd99f93688b3a0e6ce5b14ad15f1e7e14711c5b9"
+      ],
+      "time": "2026-08-14T09:00:00Z",
+      "author": {
+        "name": "Ravi Patel",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "docs: local-first tradeoffs",
+      "insertions": 8,
+      "deletions": 1,
+      "files": 2,
+      "refs": [
+        "docs/site"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "f2a4e8ea16016f564de6c6f170ad60bd25d6a5af",
+      "parents": [
+        "2252b7b809cae30498030189e78df7be74ae7891"
+      ],
+      "time": "2026-08-15T00:19:00Z",
+      "author": {
+        "name": "Ravi Patel",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "feat: backlinks panel on the note page",
+      "insertions": 9,
+      "deletions": 4,
+      "files": 3,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "3d6e7730d486edd3d174e214ad36e37f7892c57c",
+      "parents": [
+        "f2a4e8ea16016f564de6c6f170ad60bd25d6a5af"
+      ],
+      "time": "2026-08-17T03:46:00Z",
+      "author": {
+        "name": "dsh/lead",
+        "kind": "agent"
+      },
+      "agent": {
+        "runtime": "dsh",
+        "model": "flash"
+      },
+      "subject": "feat: offline cache for recent notes",
+      "insertions": 3,
+      "deletions": 1,
+      "files": 2,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "321d5dd8a240d1c3e2c737a533d5c2f14d041578",
+      "parents": [
+        "3d6e7730d486edd3d174e214ad36e37f7892c57c"
+      ],
+      "time": "2026-08-19T00:36:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "docs: note model and sync rules",
+      "insertions": 10,
+      "deletions": 1,
+      "files": 4,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "798f4291f7815395c91fa8de9950032e2c731705",
+      "parents": [
+        "321d5dd8a240d1c3e2c737a533d5c2f14d041578"
+      ],
+      "time": "2026-08-21T10:03:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "fix: empty state flicker on first load",
+      "insertions": 9,
+      "deletions": 2,
+      "files": 5,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "c23302c221207e54e3b8c4c5ff9484a87fa983d6",
+      "parents": [
+        "fc126360e015bc300a50d70d284b0ff395027d0d"
+      ],
+      "time": "2026-08-22T08:30:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "docs: keyboard map reference",
+      "insertions": 3,
+      "deletions": 2,
+      "files": 6,
+      "refs": [
+        "docs/site"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "f583c81072cb8e22b939b5eb2894f944c0339056",
+      "parents": [
+        "798f4291f7815395c91fa8de9950032e2c731705"
+      ],
+      "time": "2026-08-23T09:44:00Z",
+      "author": {
+        "name": "Ravi Patel",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "chore: pin formatter and lint config",
+      "insertions": 6,
+      "deletions": 2,
+      "files": 1,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "12f5445f0c192914e65f060e520a93ccc7630403",
+      "parents": [
+        "f583c81072cb8e22b939b5eb2894f944c0339056"
+      ],
+      "time": "2026-08-25T01:17:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "feat: offline cache for recent notes",
+      "insertions": 11,
+      "deletions": 2,
+      "files": 7,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "9be552b375366773a16a66f10a3c0e8d5b848cac",
+      "parents": [
+        "12f5445f0c192914e65f060e520a93ccc7630403"
+      ],
+      "time": "2026-08-26T05:44:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "feat: inline marks in the editor",
+      "insertions": 7,
+      "deletions": 4,
+      "files": 5,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "33d8cc76d1a325b6651929750d50e863c2f937c9",
+      "parents": [
+        "9be552b375366773a16a66f10a3c0e8d5b848cac"
+      ],
+      "time": "2026-08-28T07:40:00Z",
+      "author": {
+        "name": "Ravi Patel",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "fix: caret jumps after paste",
+      "insertions": 2,
+      "deletions": 1,
+      "files": 4,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "c84b028c2814de2bef7b0cf5961c9da62636819c",
+      "parents": [
+        "33d8cc76d1a325b6651929750d50e863c2f937c9"
+      ],
+      "time": "2026-08-30T03:11:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "chore: pin formatter and lint config",
+      "insertions": 2,
+      "deletions": 1,
+      "files": 8,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "9659d06182aa4c8a61c5759c9aa8ca4f336a347b",
+      "parents": [
+        "c84b028c2814de2bef7b0cf5961c9da62636819c"
+      ],
+      "time": "2026-08-31T21:23:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "docs: local-first tradeoffs",
+      "insertions": 4,
+      "deletions": 2,
+      "files": 5,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "90a456c83fddad2707f260dd20911fac38f296d1",
+      "parents": [
+        "c23302c221207e54e3b8c4c5ff9484a87fa983d6"
+      ],
+      "time": "2026-09-02T10:02:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "docs: release checklist",
+      "insertions": 6,
+      "deletions": 2,
+      "files": 8,
+      "refs": [
+        "docs/site"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "5c54ad2b9b5ee05b6959516f99910882f3ad72da",
+      "parents": [
+        "9659d06182aa4c8a61c5759c9aa8ca4f336a347b"
+      ],
+      "time": "2026-09-02T19:33:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "docs: editor extension guide",
+      "insertions": 9,
+      "deletions": 2,
+      "files": 7,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "649e8b1bfba81df1739c3a10b1e6b94b694ce8df",
+      "parents": [
+        "5c54ad2b9b5ee05b6959516f99910882f3ad72da"
+      ],
+      "time": "2026-09-02T23:43:00Z",
+      "author": {
+        "name": "dsh/lead",
+        "kind": "agent"
+      },
+      "agent": {
+        "runtime": "dsh",
+        "model": "flash"
+      },
+      "subject": "agent: extract the note store from the app shell",
+      "insertions": 10,
+      "deletions": 2,
+      "files": 6,
+      "refs": [
+        "agent/refactor-store"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "8fa5a1a2559c9015eeca1663d3445eb834bba172",
+      "parents": [
+        "5c54ad2b9b5ee05b6959516f99910882f3ad72da"
+      ],
+      "time": "2026-09-04T05:46:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "fix: duplicate tag rendering",
+      "insertions": 16,
+      "deletions": 2,
+      "files": 4,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "5380477a9d8f219c39d662a3dd7086d7b466dff7",
+      "parents": [
+        "649e8b1bfba81df1739c3a10b1e6b94b694ce8df"
+      ],
+      "time": "2026-09-05T09:50:00Z",
+      "author": {
+        "name": "dsh/lead",
+        "kind": "agent"
+      },
+      "agent": {
+        "runtime": "dsh",
+        "model": "flash"
+      },
+      "subject": "agent: add store invariants and tests",
+      "insertions": 9,
+      "deletions": 1,
+      "files": 2,
+      "refs": [
+        "agent/refactor-store"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "c6feda155507dece85d48ee7b9d1bf782e10b21c",
+      "parents": [
+        "8fa5a1a2559c9015eeca1663d3445eb834bba172"
+      ],
+      "time": "2026-09-05T19:59:00Z",
+      "author": {
+        "name": "Ravi Patel",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "chore: cache the test runner",
+      "insertions": 5,
+      "deletions": 1,
+      "files": 1,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "c49b6755decc551fe6e742f404596efa37c06d2c",
+      "parents": [
+        "5380477a9d8f219c39d662a3dd7086d7b466dff7"
+      ],
+      "time": "2026-09-07T00:46:00Z",
+      "author": {
+        "name": "dsh/lead",
+        "kind": "agent"
+      },
+      "agent": {
+        "runtime": "dsh",
+        "model": "flash"
+      },
+      "subject": "agent: normalise the store error surface",
+      "insertions": 9,
+      "deletions": 3,
+      "files": 3,
+      "refs": [
+        "agent/refactor-store"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "196bb45e9fc039aca5657a88113e51e2c48c2548",
+      "parents": [
+        "90a456c83fddad2707f260dd20911fac38f296d1"
+      ],
+      "time": "2026-09-07T04:51:00Z",
+      "author": {
+        "name": "Ravi Patel",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "docs: editor extension guide",
+      "insertions": 13,
+      "deletions": 3,
+      "files": 7,
+      "refs": [
+        "docs/site"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "ec645716b004253cc61550d48f2526504cc6fa6c",
+      "parents": [
+        "c49b6755decc551fe6e742f404596efa37c06d2c"
+      ],
+      "time": "2026-09-08T05:47:00Z",
+      "author": {
+        "name": "dsh/lead",
+        "kind": "agent"
+      },
+      "agent": {
+        "runtime": "dsh",
+        "model": "flash"
+      },
+      "subject": "agent: move sync scheduling into the store",
+      "insertions": 14,
+      "deletions": 2,
+      "files": 3,
+      "refs": [
+        "agent/refactor-store"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "e5318914721635abe8eb63f6ee19d4e59e4f8548",
+      "parents": [
+        "c6feda155507dece85d48ee7b9d1bf782e10b21c"
+      ],
+      "time": "2026-09-08T18:04:00Z",
+      "author": {
+        "name": "Ravi Patel",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "feat: slash menu for block insertion",
+      "insertions": 2,
+      "deletions": 1,
+      "files": 6,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "28df5d1fd2a1445367b268ee20e2955692476998",
+      "parents": [
+        "e5318914721635abe8eb63f6ee19d4e59e4f8548"
+      ],
+      "time": "2026-09-09T05:17:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "feat: inline marks in the editor",
+      "insertions": 5,
+      "deletions": 1,
+      "files": 3,
+      "refs": [
+        "feat/editor"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "012e7eb9d8be11c297e23d3aa0fd83af298884ef",
+      "parents": [
+        "ec645716b004253cc61550d48f2526504cc6fa6c"
+      ],
+      "time": "2026-09-10T03:48:00Z",
+      "author": {
+        "name": "dsh/lead",
+        "kind": "agent"
+      },
+      "agent": {
+        "runtime": "dsh",
+        "model": "flash"
+      },
+      "subject": "agent: document the store boundary",
+      "insertions": 8,
+      "deletions": 2,
+      "files": 8,
+      "refs": [
+        "agent/refactor-store"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "5ff3b3c76cc69d21fc27985aa71cc02a59a834cc",
+      "parents": [
+        "e5318914721635abe8eb63f6ee19d4e59e4f8548"
+      ],
+      "time": "2026-09-10T10:17:00Z",
+      "author": {
+        "name": "Ravi Patel",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "fix: caret jumps after paste",
+      "insertions": 8,
+      "deletions": 1,
+      "files": 3,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "c543aed2952915327019a68db0f7738cd3d95cec",
+      "parents": [
+        "28df5d1fd2a1445367b268ee20e2955692476998"
+      ],
+      "time": "2026-09-11T17:50:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "feat: slash menu for block insertion",
+      "insertions": 4,
+      "deletions": 2,
+      "files": 5,
+      "refs": [
+        "feat/editor"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "79ad54f3aabf87eec5c7733b04cbe035ffa67389",
+      "parents": [
+        "012e7eb9d8be11c297e23d3aa0fd83af298884ef"
+      ],
+      "time": "2026-09-11T19:47:00Z",
+      "author": {
+        "name": "dsh/lead",
+        "kind": "agent"
+      },
+      "agent": {
+        "runtime": "dsh",
+        "model": "flash"
+      },
+      "subject": "agent: remove the duplicated cache layer",
+      "insertions": 7,
+      "deletions": 2,
+      "files": 7,
+      "refs": [
+        "agent/refactor-store"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "544ab5cf928c7fd35c2ca638fcd1f68555c757a2",
+      "parents": [
+        "5ff3b3c76cc69d21fc27985aa71cc02a59a834cc"
+      ],
+      "time": "2026-09-12T03:10:00Z",
+      "author": {
+        "name": "Ravi Patel",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "feat: tag autocomplete in the editor",
+      "insertions": 12,
+      "deletions": 4,
+      "files": 4,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "415c71d619b93a0ec1e38b25aa317ab66416cc7d",
+      "parents": [
+        "544ab5cf928c7fd35c2ca638fcd1f68555c757a2"
+      ],
+      "time": "2026-09-13T06:31:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "fix: sync loop on reconnect",
+      "insertions": 3,
+      "deletions": 2,
+      "files": 7,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "687124998f3059a066ea54289fc21ef54db51fda",
+      "parents": [
+        "c543aed2952915327019a68db0f7738cd3d95cec"
+      ],
+      "time": "2026-09-13T12:35:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "feat: keyboard-first note switcher",
+      "insertions": 5,
+      "deletions": 1,
+      "files": 6,
+      "refs": [
+        "feat/editor"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "a001f7c84251f540dfca44e3faf58884073bc036",
+      "parents": [
+        "79ad54f3aabf87eec5c7733b04cbe035ffa67389"
+      ],
+      "time": "2026-09-14T04:21:00Z",
+      "author": {
+        "name": "dsh/lead",
+        "kind": "agent"
+      },
+      "agent": {
+        "runtime": "dsh",
+        "model": "flash"
+      },
+      "subject": "agent: tighten the store types",
+      "insertions": 11,
+      "deletions": 1,
+      "files": 2,
+      "refs": [
+        "agent/refactor-store"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "dba9deba6c5490fa2d0bea6d2524757dd7c64d62",
+      "parents": [
+        "196bb45e9fc039aca5657a88113e51e2c48c2548"
+      ],
+      "time": "2026-09-15T06:39:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "docs: note model and sync rules",
+      "insertions": 14,
+      "deletions": 2,
+      "files": 7,
+      "refs": [
+        "docs/site"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "5574c07d8c06539baab9470782a8dac06a1db8f9",
+      "parents": [
+        "687124998f3059a066ea54289fc21ef54db51fda"
+      ],
+      "time": "2026-09-15T18:24:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "feat: backlinks panel on the note page",
+      "insertions": 3,
+      "deletions": 1,
+      "files": 2,
+      "refs": [
+        "feat/editor"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "6cf7da642f6f873a8db53d3f6852b8bf95d6cdfe",
+      "parents": [
+        "415c71d619b93a0ec1e38b25aa317ab66416cc7d"
+      ],
+      "time": "2026-09-15T19:22:00Z",
+      "author": {
+        "name": "dsh/lead",
+        "kind": "agent"
+      },
+      "agent": {
+        "runtime": "dsh",
+        "model": "flash"
+      },
+      "subject": "feat: backlinks panel on the note page",
+      "insertions": 16,
+      "deletions": 3,
+      "files": 5,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "b95f763c8b2cc61107f94837dbfb28afe85f890c",
+      "parents": [
+        "a001f7c84251f540dfca44e3faf58884073bc036"
+      ],
+      "time": "2026-09-16T05:13:00Z",
+      "author": {
+        "name": "dsh/lead",
+        "kind": "agent"
+      },
+      "agent": {
+        "runtime": "dsh",
+        "model": "flash"
+      },
+      "subject": "agent: add a migration for the store shape",
+      "insertions": 11,
+      "deletions": 5,
+      "files": 3,
+      "refs": [
+        "agent/refactor-store"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "e5b3404a099851322b29284cc67f059a380ed0b6",
+      "parents": [
+        "b95f763c8b2cc61107f94837dbfb28afe85f890c"
+      ],
+      "time": "2026-09-17T16:11:00Z",
+      "author": {
+        "name": "dsh/lead",
+        "kind": "agent"
+      },
+      "agent": {
+        "runtime": "dsh",
+        "model": "flash"
+      },
+      "subject": "agent: extract the note store from the app shell",
+      "insertions": 2,
+      "deletions": 0,
+      "files": 5,
+      "refs": [
+        "agent/refactor-store"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "b84a53ab5849d04347fde4b99f3b869564a9d0be",
+      "parents": [
+        "6cf7da642f6f873a8db53d3f6852b8bf95d6cdfe"
+      ],
+      "time": "2026-09-17T18:36:00Z",
+      "author": {
+        "name": "dsh/lead",
+        "kind": "agent"
+      },
+      "agent": {
+        "runtime": "dsh",
+        "model": "flash"
+      },
+      "subject": "docs: editor extension guide",
+      "insertions": 14,
+      "deletions": 9,
+      "files": 6,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "3f038dd28ae825c728c28df9544b6c28c899dac3",
+      "parents": [
+        "e5b3404a099851322b29284cc67f059a380ed0b6"
+      ],
+      "time": "2026-09-18T15:42:00Z",
+      "author": {
+        "name": "dsh/lead",
+        "kind": "agent"
+      },
+      "agent": {
+        "runtime": "dsh",
+        "model": "flash"
+      },
+      "subject": "agent: add store invariants and tests",
+      "insertions": 11,
+      "deletions": 2,
+      "files": 3,
+      "refs": [
+        "agent/refactor-store"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "77a501ba6771503f8f263b62e9e393b3e6fb7dea",
+      "parents": [
+        "5574c07d8c06539baab9470782a8dac06a1db8f9"
+      ],
+      "time": "2026-09-18T16:33:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "feat: drag to reorder blocks",
+      "insertions": 4,
+      "deletions": 1,
+      "files": 2,
+      "refs": [
+        "feat/editor"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "9600a14ec64a48220e3e634d817e265d5bf01748",
+      "parents": [
+        "b84a53ab5849d04347fde4b99f3b869564a9d0be"
+      ],
+      "time": "2026-09-19T04:35:00Z",
+      "author": {
+        "name": "dsh/lead",
+        "kind": "agent"
+      },
+      "agent": {
+        "runtime": "dsh",
+        "model": "flash"
+      },
+      "subject": "docs: keyboard map reference",
+      "insertions": 11,
+      "deletions": 3,
+      "files": 8,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "58a16869c0d4fff4db680dade33d0aaa3751794e",
+      "parents": [
+        "77a501ba6771503f8f263b62e9e393b3e6fb7dea"
+      ],
+      "time": "2026-09-20T11:25:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "feat: offline cache for recent notes",
+      "insertions": 5,
+      "deletions": 2,
+      "files": 4,
+      "refs": [
+        "feat/editor"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "626067078a882733cb3af07460d50bb67e82382b",
+      "parents": [
+        "3f038dd28ae825c728c28df9544b6c28c899dac3"
+      ],
+      "time": "2026-09-20T14:03:00Z",
+      "author": {
+        "name": "dsh/lead",
+        "kind": "agent"
+      },
+      "agent": {
+        "runtime": "dsh",
+        "model": "flash"
+      },
+      "subject": "agent: normalise the store error surface",
+      "insertions": 8,
+      "deletions": 3,
+      "files": 6,
+      "refs": [
+        "agent/refactor-store"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "32b8f2695b9684fea65a9011ee7ac0185b373895",
+      "parents": [
+        "9600a14ec64a48220e3e634d817e265d5bf01748"
+      ],
+      "time": "2026-09-21T02:56:00Z",
+      "author": {
+        "name": "dsh/lead",
+        "kind": "agent"
+      },
+      "agent": {
+        "runtime": "dsh",
+        "model": "flash"
+      },
+      "subject": "docs: release checklist",
+      "insertions": 7,
+      "deletions": 1,
+      "files": 7,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "62c6ebdfbcd3bbe0dfc3d8d61285dffded04d0fe",
+      "parents": [
+        "32b8f2695b9684fea65a9011ee7ac0185b373895"
+      ],
+      "time": "2026-09-22T14:19:00Z",
+      "author": {
+        "name": "dsh/lead",
+        "kind": "agent"
+      },
+      "agent": {
+        "runtime": "dsh",
+        "model": "flash"
+      },
+      "subject": "feat: inline marks in the editor",
+      "insertions": 12,
+      "deletions": 3,
+      "files": 2,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "345988a3b32d7a4ac251230cce316ad827271dcf",
+      "parents": [
+        "626067078a882733cb3af07460d50bb67e82382b"
+      ],
+      "time": "2026-09-22T23:36:00Z",
+      "author": {
+        "name": "dsh/lead",
+        "kind": "agent"
+      },
+      "agent": {
+        "runtime": "dsh",
+        "model": "flash"
+      },
+      "subject": "agent: move sync scheduling into the store",
+      "insertions": 8,
+      "deletions": 3,
+      "files": 8,
+      "refs": [
+        "agent/refactor-store"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "e5610433fd9c072b2b0d773dce6ad69751a177c7",
+      "parents": [
+        "58a16869c0d4fff4db680dade33d0aaa3751794e"
+      ],
+      "time": "2026-09-23T00:45:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "feat: command palette search",
+      "insertions": 5,
+      "deletions": 3,
+      "files": 1,
+      "refs": [
+        "feat/editor"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "dc6c463775f3097573095a21440880f344cf871b",
+      "parents": [
+        "e5610433fd9c072b2b0d773dce6ad69751a177c7"
+      ],
+      "time": "2026-09-24T03:51:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "feat: sync status in the sidebar",
+      "insertions": 10,
+      "deletions": 1,
+      "files": 2,
+      "refs": [
+        "feat/editor"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "de7c9bfea582a2f05e6c65456370151821db10a9",
+      "parents": [
+        "62c6ebdfbcd3bbe0dfc3d8d61285dffded04d0fe"
+      ],
+      "time": "2026-09-24T10:58:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "feat: command palette search",
+      "insertions": 17,
+      "deletions": 2,
+      "files": 5,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "ef62e1b151df061b03cbb25a88fd530ae88a78bc",
+      "parents": [
+        "345988a3b32d7a4ac251230cce316ad827271dcf"
+      ],
+      "time": "2026-09-25T00:31:00Z",
+      "author": {
+        "name": "dsh/lead",
+        "kind": "agent"
+      },
+      "agent": {
+        "runtime": "dsh",
+        "model": "flash"
+      },
+      "subject": "agent: document the store boundary",
+      "insertions": 3,
+      "deletions": 2,
+      "files": 3,
+      "refs": [
+        "agent/refactor-store"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "9403b666910a4fa9b16d3c0311ceb5f26cfbb772",
+      "parents": [
+        "ef62e1b151df061b03cbb25a88fd530ae88a78bc"
+      ],
+      "time": "2026-09-26T04:33:00Z",
+      "author": {
+        "name": "dsh/lead",
+        "kind": "agent"
+      },
+      "agent": {
+        "runtime": "dsh",
+        "model": "flash"
+      },
+      "subject": "agent: remove the duplicated cache layer",
+      "insertions": 7,
+      "deletions": 4,
+      "files": 6,
+      "refs": [
+        "agent/refactor-store"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "60f77e79847980d98b01e6bda430355041e79d46",
+      "parents": [
+        "de7c9bfea582a2f05e6c65456370151821db10a9"
+      ],
+      "time": "2026-09-26T04:39:00Z",
+      "author": {
+        "name": "Ravi Patel",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "chore: nightly dependency audit",
+      "insertions": 10,
+      "deletions": 4,
+      "files": 5,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "97abde580227f0907fc2fbba5b1e22defbf6853b",
+      "parents": [
+        "dc6c463775f3097573095a21440880f344cf871b"
+      ],
+      "time": "2026-09-27T20:58:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "feat: markdown paste normaliser",
+      "insertions": 6,
+      "deletions": 3,
+      "files": 2,
+      "refs": [
+        "feat/editor"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "38fd7be97af58583e15e483a8f739f14f16b5a1a",
+      "parents": [
+        "9403b666910a4fa9b16d3c0311ceb5f26cfbb772"
+      ],
+      "time": "2026-09-28T04:43:00Z",
+      "author": {
+        "name": "dsh/lead",
+        "kind": "agent"
+      },
+      "agent": {
+        "runtime": "dsh",
+        "model": "flash"
+      },
+      "subject": "agent: tighten the store types",
+      "insertions": 5,
+      "deletions": 1,
+      "files": 5,
+      "refs": [
+        "agent/refactor-store"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "ac0d283013e826b22a220685e0565a63963601ee",
+      "parents": [
+        "dba9deba6c5490fa2d0bea6d2524757dd7c64d62"
+      ],
+      "time": "2026-09-28T09:37:00Z",
+      "author": {
+        "name": "Ravi Patel",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "docs: local-first tradeoffs",
+      "insertions": 4,
+      "deletions": 2,
+      "files": 7,
+      "refs": [
+        "docs/site"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "6d477ce38e80b35f64a9f2e5c7146fdd405caebd",
+      "parents": [
+        "60f77e79847980d98b01e6bda430355041e79d46"
+      ],
+      "time": "2026-09-28T16:06:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "feat: offline cache for recent notes",
+      "insertions": 3,
+      "deletions": 1,
+      "files": 7,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "8f52951c8beb05b21b3c6b2a410212cbfaa7ecf2",
+      "parents": [
+        "97abde580227f0907fc2fbba5b1e22defbf6853b"
+      ],
+      "time": "2026-09-29T17:22:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "feat: tag autocomplete in the editor",
+      "insertions": 10,
+      "deletions": 4,
+      "files": 3,
+      "refs": [
+        "feat/editor"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "a6842aa4f562586d1ada3bff5e74ba8ad137e5fd",
+      "parents": [
+        "38fd7be97af58583e15e483a8f739f14f16b5a1a"
+      ],
+      "time": "2026-09-29T19:01:00Z",
+      "author": {
+        "name": "dsh/lead",
+        "kind": "agent"
+      },
+      "agent": {
+        "runtime": "dsh",
+        "model": "flash"
+      },
+      "subject": "agent: add a migration for the store shape",
+      "insertions": 6,
+      "deletions": 1,
+      "files": 4,
+      "refs": [
+        "agent/refactor-store"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "b8f40d7be2f2f0076ebc214ff9322b1ef92e2459",
+      "parents": [
+        "6d477ce38e80b35f64a9f2e5c7146fdd405caebd"
+      ],
+      "time": "2026-09-29T19:53:00Z",
+      "author": {
+        "name": "dsh/lead",
+        "kind": "agent"
+      },
+      "agent": {
+        "runtime": "dsh",
+        "model": "flash"
+      },
+      "subject": "release: v1.0.0",
+      "insertions": 180,
+      "deletions": 40,
+      "files": 12,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "db8c3175e5856fa6e9f5230fd6aa19532c4b5af5",
+      "parents": [
+        "ac0d283013e826b22a220685e0565a63963601ee"
+      ],
+      "time": "2026-10-01T07:14:00Z",
+      "author": {
+        "name": "Ravi Patel",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "docs: keyboard map reference",
+      "insertions": 9,
+      "deletions": 2,
+      "files": 7,
+      "refs": [
+        "docs/site"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "d44355835ed70d355003ada68b07decdb31d9ca3",
+      "parents": [
+        "8f52951c8beb05b21b3c6b2a410212cbfaa7ecf2"
+      ],
+      "time": "2026-10-01T08:03:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "feat: inline marks in the editor",
+      "insertions": 10,
+      "deletions": 1,
+      "files": 7,
+      "refs": [
+        "feat/editor"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "1187b8320d2e13eb23325d07272ceee22066e99d",
+      "parents": [
+        "a6842aa4f562586d1ada3bff5e74ba8ad137e5fd"
+      ],
+      "time": "2026-10-01T15:36:00Z",
+      "author": {
+        "name": "dsh/lead",
+        "kind": "agent"
+      },
+      "agent": {
+        "runtime": "dsh",
+        "model": "flash"
+      },
+      "subject": "agent: extract the note store from the app shell",
+      "insertions": 8,
+      "deletions": 5,
+      "files": 6,
+      "refs": [
+        "agent/refactor-store"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "fe9c7cf8c65b4744344d1ff48f39b4b963050be4",
+      "parents": [
+        "b8f40d7be2f2f0076ebc214ff9322b1ef92e2459"
+      ],
+      "time": "2026-10-02T13:27:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "docs: keyboard map reference",
+      "insertions": 15,
+      "deletions": 5,
+      "files": 6,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "cdc47a2885bb96ca1ea1d0ed9abbbaa40bedbe7e",
+      "parents": [
+        "1187b8320d2e13eb23325d07272ceee22066e99d"
+      ],
+      "time": "2026-10-03T01:16:00Z",
+      "author": {
+        "name": "dsh/lead",
+        "kind": "agent"
+      },
+      "agent": {
+        "runtime": "dsh",
+        "model": "flash"
+      },
+      "subject": "agent: add store invariants and tests",
+      "insertions": 3,
+      "deletions": 2,
+      "files": 7,
+      "refs": [
+        "agent/refactor-store"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "8f5c6cf89d70ff3fdcc6e068aedc1e9a83664293",
+      "parents": [
+        "d44355835ed70d355003ada68b07decdb31d9ca3"
+      ],
+      "time": "2026-10-04T03:32:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "feat: slash menu for block insertion",
+      "insertions": 12,
+      "deletions": 4,
+      "files": 2,
+      "refs": [
+        "feat/editor"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "1c3f30bf9e8e1ba9633749f13a2dae8f080aaa03",
+      "parents": [
+        "fe9c7cf8c65b4744344d1ff48f39b4b963050be4"
+      ],
+      "time": "2026-10-04T08:52:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "fix: empty state flicker on first load",
+      "insertions": 9,
+      "deletions": 1,
+      "files": 6,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "f12a0de5b26f084d5aa6de408965af3d222424aa",
+      "parents": [
+        "cdc47a2885bb96ca1ea1d0ed9abbbaa40bedbe7e"
+      ],
+      "time": "2026-10-05T00:34:00Z",
+      "author": {
+        "name": "dsh/lead",
+        "kind": "agent"
+      },
+      "agent": {
+        "runtime": "dsh",
+        "model": "flash"
+      },
+      "subject": "agent: normalise the store error surface",
+      "insertions": 15,
+      "deletions": 1,
+      "files": 3,
+      "refs": [
+        "agent/refactor-store"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "199499dd02b33b7bf8bf42ca25e0e098390483c1",
+      "parents": [
+        "1c3f30bf9e8e1ba9633749f13a2dae8f080aaa03"
+      ],
+      "time": "2026-10-05T07:08:00Z",
+      "author": {
+        "name": "Ravi Patel",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "fix: stale note title in the header",
+      "insertions": 3,
+      "deletions": 1,
+      "files": 1,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "97a2b584976ac9431fffb7d852e095c3414e9ff3",
+      "parents": [
+        "8f5c6cf89d70ff3fdcc6e068aedc1e9a83664293"
+      ],
+      "time": "2026-10-05T20:49:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "feat: keyboard-first note switcher",
+      "insertions": 4,
+      "deletions": 1,
+      "files": 6,
+      "refs": [
+        "feat/editor"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "e18960a22447bd8dfd833b55b41cd599ed307c7f",
+      "parents": [
+        "f12a0de5b26f084d5aa6de408965af3d222424aa"
+      ],
+      "time": "2026-10-06T22:36:00Z",
+      "author": {
+        "name": "dsh/lead",
+        "kind": "agent"
+      },
+      "agent": {
+        "runtime": "dsh",
+        "model": "flash"
+      },
+      "subject": "agent: move sync scheduling into the store",
+      "insertions": 14,
+      "deletions": 3,
+      "files": 5,
+      "refs": [
+        "agent/refactor-store"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "97aff0a41d7f6191e6a2a36f97aae41d4d3e120c",
+      "parents": [
+        "199499dd02b33b7bf8bf42ca25e0e098390483c1"
+      ],
+      "time": "2026-10-07T09:38:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "docs: editor extension guide",
+      "insertions": 9,
+      "deletions": 1,
+      "files": 7,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "c6e0341e23efe150b6a6669c9e98bea14d2cd733",
+      "parents": [
+        "97a2b584976ac9431fffb7d852e095c3414e9ff3"
+      ],
+      "time": "2026-10-08T07:58:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "feat: backlinks panel on the note page",
+      "insertions": 16,
+      "deletions": 3,
+      "files": 2,
+      "refs": [
+        "feat/editor"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "03901c872240dfdb4fa082a286a1c0f6c8fbddd0",
+      "parents": [
+        "97aff0a41d7f6191e6a2a36f97aae41d4d3e120c"
+      ],
+      "time": "2026-10-09T04:23:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "chore: split the bundle by route",
+      "insertions": 4,
+      "deletions": 3,
+      "files": 4,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "9d44215cced257e37179d63f35d44cd24d3dfc2a",
+      "parents": [
+        "e18960a22447bd8dfd833b55b41cd599ed307c7f"
+      ],
+      "time": "2026-10-09T08:52:00Z",
+      "author": {
+        "name": "dsh/lead",
+        "kind": "agent"
+      },
+      "agent": {
+        "runtime": "dsh",
+        "model": "flash"
+      },
+      "subject": "agent: document the store boundary",
+      "insertions": 14,
+      "deletions": 2,
+      "files": 5,
+      "refs": [
+        "agent/refactor-store"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "bcdca5975cf8055a2e04c58dc3ca4b610c0e33b9",
+      "parents": [
+        "9d44215cced257e37179d63f35d44cd24d3dfc2a"
+      ],
+      "time": "2026-10-11T02:55:00Z",
+      "author": {
+        "name": "dsh/lead",
+        "kind": "agent"
+      },
+      "agent": {
+        "runtime": "dsh",
+        "model": "flash"
+      },
+      "subject": "agent: remove the duplicated cache layer",
+      "insertions": 3,
+      "deletions": 1,
+      "files": 2,
+      "refs": [
+        "agent/refactor-store"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "aab099ee7165da6fd18a8654ddd2ac5ccbb258c2",
+      "parents": [
+        "c6e0341e23efe150b6a6669c9e98bea14d2cd733"
+      ],
+      "time": "2026-10-11T04:42:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "feat: drag to reorder blocks",
+      "insertions": 6,
+      "deletions": 2,
+      "files": 5,
+      "refs": [
+        "feat/editor"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "bbbe2d76883f2c4e2fc3035ed1f760004dfb0ec2",
+      "parents": [
+        "03901c872240dfdb4fa082a286a1c0f6c8fbddd0"
+      ],
+      "time": "2026-10-11T05:35:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "fix: sync loop on reconnect",
+      "insertions": 8,
+      "deletions": 1,
+      "files": 5,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "6546f4902af6cf238c397a9ea0da4f32eb98ad5f",
+      "parents": [
+        "db8c3175e5856fa6e9f5230fd6aa19532c4b5af5"
+      ],
+      "time": "2026-10-11T20:14:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "docs: release checklist",
+      "insertions": 4,
+      "deletions": 1,
+      "files": 6,
+      "refs": [
+        "docs/site"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "e8d6f2fc6a0a983b16a8b57f294d3b6115d8f867",
+      "parents": [
+        "bcdca5975cf8055a2e04c58dc3ca4b610c0e33b9"
+      ],
+      "time": "2026-10-12T02:59:00Z",
+      "author": {
+        "name": "dsh/lead",
+        "kind": "agent"
+      },
+      "agent": {
+        "runtime": "dsh",
+        "model": "flash"
+      },
+      "subject": "agent: tighten the store types",
+      "insertions": 3,
+      "deletions": 1,
+      "files": 7,
+      "refs": [
+        "agent/refactor-store"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "12fc7e44d415bbed6972fbdea438bd229b906c35",
+      "parents": [
+        "aab099ee7165da6fd18a8654ddd2ac5ccbb258c2"
+      ],
+      "time": "2026-10-12T09:30:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "feat: offline cache for recent notes",
+      "insertions": 8,
+      "deletions": 2,
+      "files": 1,
+      "refs": [
+        "feat/editor"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "b4492d50421e49451d29464a7d549d3da364ff65",
+      "parents": [
+        "bbbe2d76883f2c4e2fc3035ed1f760004dfb0ec2"
+      ],
+      "time": "2026-10-12T11:53:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "feat: inline marks in the editor",
+      "insertions": 27,
+      "deletions": 2,
+      "files": 6,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "511716c3a291375cedad536db6a465f8cf6ee69b",
+      "parents": [
+        "b4492d50421e49451d29464a7d549d3da364ff65"
+      ],
+      "time": "2026-10-12T12:45:00Z",
+      "author": {
+        "name": "Ravi Patel",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "fix: caret jumps after paste",
+      "insertions": 6,
+      "deletions": 1,
+      "files": 7,
+      "refs": [
+        "fix/sync-race"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "11582d3aea88a39374302dd6b8cfa2082049bf97",
+      "parents": [
+        "e8d6f2fc6a0a983b16a8b57f294d3b6115d8f867"
+      ],
+      "time": "2026-10-14T03:26:00Z",
+      "author": {
+        "name": "dsh/lead",
+        "kind": "agent"
+      },
+      "agent": {
+        "runtime": "dsh",
+        "model": "flash"
+      },
+      "subject": "agent: add a migration for the store shape",
+      "insertions": 6,
+      "deletions": 3,
+      "files": 6,
+      "refs": [
+        "agent/refactor-store"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "816339f637d628e8b8130b89e723cffd5cc33945",
+      "parents": [
+        "b4492d50421e49451d29464a7d549d3da364ff65"
+      ],
+      "time": "2026-10-14T16:17:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "docs: keyboard map reference",
+      "insertions": 9,
+      "deletions": 4,
+      "files": 4,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "96d149ff3f046eaecb032e2381bd642982e1174e",
+      "parents": [
+        "12fc7e44d415bbed6972fbdea438bd229b906c35"
+      ],
+      "time": "2026-10-14T18:12:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "feat: command palette search",
+      "insertions": 8,
+      "deletions": 1,
+      "files": 2,
+      "refs": [
+        "feat/editor"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "712185bb50d3931e56287a84005e94dfe4dbe247",
+      "parents": [
+        "511716c3a291375cedad536db6a465f8cf6ee69b"
+      ],
+      "time": "2026-10-15T19:06:00Z",
+      "author": {
+        "name": "Ravi Patel",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "fix: sync loop on reconnect",
+      "insertions": 7,
+      "deletions": 1,
+      "files": 2,
+      "refs": [
+        "fix/sync-race"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "1c49d7eb1ef2371eb81c72deb2874b1f26960117",
+      "parents": [
+        "96d149ff3f046eaecb032e2381bd642982e1174e"
+      ],
+      "time": "2026-10-16T19:59:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "feat: sync status in the sidebar",
+      "insertions": 4,
+      "deletions": 3,
+      "files": 3,
+      "refs": [
+        "feat/editor"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "21d938891eaa5598d77eb76edd237a9da77e062a",
+      "parents": [
+        "712185bb50d3931e56287a84005e94dfe4dbe247"
+      ],
+      "time": "2026-10-17T02:11:00Z",
+      "author": {
+        "name": "Ravi Patel",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "fix: stale note title in the header",
+      "insertions": 6,
+      "deletions": 1,
+      "files": 5,
+      "refs": [
+        "fix/sync-race"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "0e06bd0c0125847e6fe037e01e17cf0b38a5bed9",
+      "parents": [
+        "816339f637d628e8b8130b89e723cffd5cc33945"
+      ],
+      "time": "2026-10-17T05:36:00Z",
+      "author": {
+        "name": "dsh/lead",
+        "kind": "agent"
+      },
+      "agent": {
+        "runtime": "dsh",
+        "model": "flash"
+      },
+      "subject": "fix: duplicate tag rendering",
+      "insertions": 8,
+      "deletions": 1,
+      "files": 5,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "c72bf4e8d0827799ac0b6af4769cf46fbe886bce",
+      "parents": [
+        "0e06bd0c0125847e6fe037e01e17cf0b38a5bed9"
+      ],
+      "time": "2026-10-18T11:50:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "fix: escape closes the wrong overlay",
+      "insertions": 3,
+      "deletions": 2,
+      "files": 3,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "056a5e4b60a82f3a6890597e54d74b97ad387188",
+      "parents": [
+        "1c49d7eb1ef2371eb81c72deb2874b1f26960117"
+      ],
+      "time": "2026-10-18T20:41:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "feat: markdown paste normaliser",
+      "insertions": 2,
+      "deletions": 1,
+      "files": 2,
+      "refs": [
+        "feat/editor"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "80743885ee5c2a7e3993ec98ae82588cdd22a847",
+      "parents": [
+        "6546f4902af6cf238c397a9ea0da4f32eb98ad5f"
+      ],
+      "time": "2026-10-18T21:20:00Z",
+      "author": {
+        "name": "Ravi Patel",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "docs: editor extension guide",
+      "insertions": 8,
+      "deletions": 1,
+      "files": 2,
+      "refs": [
+        "docs/site"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "263330340119216f747dcedc27ac9bd047b1a9c2",
+      "parents": [
+        "21d938891eaa5598d77eb76edd237a9da77e062a"
+      ],
+      "time": "2026-10-19T12:29:00Z",
+      "author": {
+        "name": "Ravi Patel",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "fix: focus lost when the palette closes",
+      "insertions": 16,
+      "deletions": 5,
+      "files": 4,
+      "refs": [
+        "fix/sync-race"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "678ff6be84b4c3e9d324228b39473f96742ae6fe",
+      "parents": [
+        "c72bf4e8d0827799ac0b6af4769cf46fbe886bce"
+      ],
+      "time": "2026-10-20T12:05:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "feat: drag to reorder blocks",
+      "insertions": 6,
+      "deletions": 5,
+      "files": 7,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "a106a000fd6b116825d8ab891612a10974f061b2",
+      "parents": [
+        "263330340119216f747dcedc27ac9bd047b1a9c2"
+      ],
+      "time": "2026-10-20T22:05:00Z",
+      "author": {
+        "name": "Ravi Patel",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "fix: debounce the search field",
+      "insertions": 10,
+      "deletions": 2,
+      "files": 4,
+      "refs": [
+        "fix/sync-race"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "84bc5d0e40fb62c87fb806693dbc7d9654f713ae",
+      "parents": [
+        "678ff6be84b4c3e9d324228b39473f96742ae6fe"
+      ],
+      "time": "2026-10-21T23:17:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "feat: slash menu for block insertion",
+      "insertions": 5,
+      "deletions": 2,
+      "files": 3,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "c7518266f8209cfbf6ea2cebb0ecd64cc853b96e",
+      "parents": [
+        "a106a000fd6b116825d8ab891612a10974f061b2"
+      ],
+      "time": "2026-10-23T06:07:00Z",
+      "author": {
+        "name": "Ravi Patel",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "fix: scroll position after block delete",
+      "insertions": 9,
+      "deletions": 3,
+      "files": 7,
+      "refs": [
+        "fix/sync-race"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "87533ebd5c0afa839b5ffcd7ca6449afa5322293",
+      "parents": [
+        "84bc5d0e40fb62c87fb806693dbc7d9654f713ae"
+      ],
+      "time": "2026-10-23T15:39:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "fix: debounce the search field",
+      "insertions": 5,
+      "deletions": 2,
+      "files": 2,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "0ba89daf6f3b29293d691cf58f750c5c047a4a53",
+      "parents": [
+        "87533ebd5c0afa839b5ffcd7ca6449afa5322293"
+      ],
+      "time": "2026-10-25T22:35:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "feat: sync status in the sidebar",
+      "insertions": 3,
+      "deletions": 1,
+      "files": 6,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "e02115ef3c0ad8117f28b3a2a734b16855ea6b51",
+      "parents": [
+        "0ba89daf6f3b29293d691cf58f750c5c047a4a53",
+        "80743885ee5c2a7e3993ec98ae82588cdd22a847"
+      ],
+      "time": "2026-10-26T16:00:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "Merge branch 'docs/site'",
+      "insertions": 0,
+      "deletions": 0,
+      "files": 0,
+      "refs": [
+        "main"
+      ],
+      "merge": true
+    },
+    {
+      "sha": "d5fcc78590836e2cf06a1d464c63f187adc17a08",
+      "parents": [
+        "e02115ef3c0ad8117f28b3a2a734b16855ea6b51"
+      ],
+      "time": "2026-10-27T16:39:00Z",
+      "author": {
+        "name": "Maya Chen",
+        "kind": "human"
+      },
+      "agent": null,
+      "subject": "release: v1.1.0",
+      "insertions": 180,
+      "deletions": 40,
+      "files": 12,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    },
+    {
+      "sha": "5e4093b286c14b9197098fc82e6032850cb7bea9",
+      "parents": [
+        "d5fcc78590836e2cf06a1d464c63f187adc17a08"
+      ],
+      "time": "2026-10-29T02:51:00Z",
+      "author": {
+        "name": "dsh/lead",
+        "kind": "agent"
+      },
+      "agent": {
+        "runtime": "dsh",
+        "model": "flash"
+      },
+      "subject": "feat: inline marks in the editor",
+      "insertions": 6,
+      "deletions": 0,
+      "files": 6,
+      "refs": [
+        "main"
+      ],
+      "merge": false
+    }
+  ],
+  "tags": [
+    {
+      "name": "v0.9.0",
+      "sha": "3fb9a274380958ef2a62eb84960bd65e9eac94d8",
+      "time": "2026-08-12T08:24:00Z"
+    },
+    {
+      "name": "v1.0.0",
+      "sha": "b8f40d7be2f2f0076ebc214ff9322b1ef92e2459",
+      "time": "2026-09-29T19:53:00Z"
+    },
+    {
+      "name": "v1.1.0",
+      "sha": "d5fcc78590836e2cf06a1d464c63f187adc17a08",
+      "time": "2026-10-27T16:39:00Z"
+    }
+  ],
+  "scale": {
+    "churnCeiling": 40,
+    "levels": 16
+  }
+}

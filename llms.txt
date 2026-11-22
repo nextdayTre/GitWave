@@ -1,0 +1,35 @@
+# GitWave
+
+> Repositories as waveforms — every commit is a sample.
+
+GitWave is a single-file, offline, read-only history instrument. It renders a repository
+window as 32 time slots; every ref is a monotone wave over the same time axis; the 2D
+height is the slot's churn level (0–15); warmth is attention; an amber 2-D pad is the
+open-PR tension. Press 3D for the **fluid oscillator rack**: each saved filter is its own
+small 3D wavetable surface, with visual search and author/ref splits.
+
+- Version 0.4.0. Open: `gitwave.html` (no install, server or network; works from file://).
+- Default: 90-day window ending at the fixed demo snapshot 2026-11-01T18:00:00Z, theme
+  `signal`, six refs, 168 commits, three open/draft PRs.
+- Read-only: every gesture changes the view; `copy show`/`copy log` only copy git commands.
+- Find: `author:maya`, `ref:editor`, `pr:15`, `agent`, `merged`, `after:2026-09-01`, text.
+- The 3D is not a chart: no 0–F axis or grid; the surface breathes and an amber wavetable
+  position frame travels through it; the stage bar reads POS % (of the history). `?static=1`
+  freezes the ambient motion for screenshots.
+- Rack: opening modules = Merge History / agent/refactor-store / Maya Chen; click to solo,
+  open to expand, `+author`/`+ref` to split, `+` to pin the find; max 8 modules.
+- Depth: up to 24 layers, 5 days apart; front = the read head; active filter = selected
+  module or the find.
+- Agent spawn: `gitwave.html?spawn=author:maya&name=Maya` (repeatable) opens the rack with
+  those filters; the first is active.
+- Build: `npm install && npm run build` (Node >= 23.6, Vite, single-file output).
+- Test: `npm test` (79), `npm run typecheck`, `node tools/make-demo.mjs --check`,
+  `node tools/verify.mjs` (55 headless checks, 12 screenshots).
+- Data: `.gitwave` schema 1; view schema 1 (`depth`/`query`/`modules`/`rack` additive);
+  link `#gw=` + base64url(view), never the data.
+- No `window.gitwave`, CLI or MCP yet. Do not claim them; the spawn URL is the preview.
+- Docs: README.md, docs/DESIGN.md (visual contract), docs/GIT-MODEL.md (mapping + schemas),
+  docs/DEMO.md (the fixture), AGENTS.md (rules for agents).
+- Invariants: document frozen; canvas and strip share one geometry; no ad-hoc colours;
+  untrusted text via textContent; deterministic, UTC; no fetch/network/telemetry.
+- Non-goals: git writes, GitHub API in the app, telemetry, replacing the human instrument.
