@@ -34,6 +34,7 @@ import { initTray, openTray, focusPr, renderTray } from "./ui/tray.js";
 import { initHelp, openHelp } from "./ui/help.js";
 import { initControls, syncControls, syncStageKnobsLive } from "./ui/controls.js";
 import { drawBrowserFrames, renderBrowserGrid, renderTree } from "./ui/browser.js";
+import { renderDiffView } from "./ui/diff.js";
 import { initKeyboard } from "./ui/keyboard.js";
 import { announce } from "./ui/status.ts";
 
@@ -94,6 +95,9 @@ function boot() {
   }
   if (params.has("tree")) {
     ctx.treeOpen = params.get("tree") !== "0";
+  }
+  if (params.has("diff")) {
+    ctx.diffOpen = params.get("diff") !== "0";
   }
   if (params.has("focus")) {
     const ref = model.refsById.get(params.get("focus"));
@@ -203,7 +207,9 @@ function ambientFrame(now) {
   }
   ctx.morph = (now - ambientStart) / 1000 + phaseParam;
   if (ctx.depthScan >= 0 && now - ctx.depthScan >= 750) ctx.depthScan = -1;
-  if (ctx.browserOpen) {
+  if (ctx.diffOpen) {
+    /* Pause 3D canvas redraws while reading commits/diffs */
+  } else if (ctx.browserOpen) {
     if (now - ambientLast >= 33) {
       drawBrowserFrames();
       ambientLast = now;
@@ -248,13 +254,15 @@ function updateMirrors() {
 }
 
 function renderAll() {
-  const mode = !ctx.view?.depth
-    ? "wave"
-    : ctx.browserOpen
-      ? "browser"
-      : ctx.view.rack
-        ? "rack"
-        : "depth";
+  const mode = ctx.diffOpen
+    ? "diff"
+    : !ctx.view?.depth
+      ? "wave"
+      : ctx.browserOpen
+        ? "browser"
+        : ctx.view.rack
+          ? "rack"
+          : "depth";
 
   const workspace = document.getElementById("workspace");
   const tree = document.getElementById("gitTree");
@@ -270,17 +278,20 @@ function renderAll() {
   const rackBar = document.getElementById("rackBar");
   const rack = document.getElementById("rack");
   const browser = document.getElementById("browser");
+  const diffView = document.getElementById("diffView");
 
-  if (viewport) viewport.hidden = mode === "rack" || mode === "browser";
+  if (viewport) viewport.hidden = mode === "rack" || mode === "browser" || mode === "diff";
   if (scope2dWrap) scope2dWrap.hidden = mode !== "depth";
   if (stageKnobs) stageKnobs.hidden = mode !== "depth";
   if (rackBar) rackBar.hidden = mode !== "rack";
   if (rack) rack.hidden = mode !== "rack";
   if (browser) browser.hidden = mode !== "browser";
+  if (diffView) diffView.hidden = mode !== "diff";
 
   if (ctx.treeOpen) renderTree();
 
-  if (mode === "rack") renderRack();
+  if (mode === "diff") renderDiffView();
+  else if (mode === "rack") renderRack();
   else if (mode === "browser") renderBrowserGrid();
   else if (mode === "depth") drawDepth();
   else drawWave();
@@ -292,14 +303,15 @@ function renderAll() {
   }
   const hint = document.getElementById("hint");
   if (hint) {
+    hint.hidden = mode === "diff";
     hint.textContent =
       mode === "rack"
-        ? "drag any wavetable or WT POS to time-travel in sync · click card to set diff baseline · space to scan"
+        ? "drag wavetable to time-travel in sync · click slot for yellow 3D beacon · double-click slot for diff"
         : mode === "browser"
           ? "click a wavetable to load · double-click to open 3D stage · heart to favorite"
           : mode === "depth"
-            ? "drag 3D to orbit · turn WT POS or press Space to scan history · hover/click 2D scope peaks to inspect"
-            : "wheel to travel · click a commit · space to play";
+            ? "drag 3D to orbit · click slot or 2D peak to inspect · double-click slot for full diff"
+            : "wheel to travel · click a commit · double-click a slot for full diff";
   }
 
   renderStrip();

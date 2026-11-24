@@ -31,8 +31,9 @@ import {
 import { searchCommits } from "../core/search.ts";
 import { buildSpline, evalSpline } from "../core/spline.ts";
 import { mixHex, rgba } from "../core/theme.ts";
-import { focusSlot, historyRange, wtPosOf } from "../core/view.ts";
+import { focusSlot, historyRange, wtPosOf, endMsAtWtPos } from "../core/view.ts";
 import { buildWavetable, sampleWavetableSlice } from "../core/wavetable.ts";
+import { openDiffView } from "../ui/diff.js";
 import { shortSha } from "../ui/dom.js";
 
 const MONO = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
@@ -407,32 +408,100 @@ function paintWavetable3D(g, table, proj, P, opts) {
     }
     g.stroke();
 
-    /* Cross-linked 3D slot cursor when hovering/focusing a peak on the 2D scope or strip */
+    /* Pulsing yellow selection beacon dot on the 3D waveform (both Stage & Rack) */
     const markerSlot = opts.markerSlot ?? -1;
-    if (isStage && markerSlot >= 0 && markerSlot < SLOT_COUNT) {
+    const markerOwned = opts.markerOwned !== false;
+    const markerPulse = opts.markerPulse ?? 0.5;
+    const markerLabel = opts.markerLabel ?? "";
+    if (!isBrowser && markerSlot >= 0 && markerSlot < SLOT_COUNT) {
       const idx = Math.round((markerSlot / (SLOT_COUNT - 1)) * (S - 1));
       const mp = activePts[idx];
       const mb = activeBase[idx];
       if (mp && mb) {
-        g.strokeStyle = rgba(P.handle, 0.55);
-        g.lineWidth = 1;
-        g.setLineDash([2, 2]);
+        const dotYellow = mixHex(playheadColor, P.handle, 0.25);
+        const dotCore = mixHex(playheadColor, P.handle, 0.78);
+        const baseR = isStage ? 4.8 : 3.9;
+        const sonarR = baseR + 3.5 + markerPulse * (isStage ? 11.5 : 8.5);
+        const sonarAlpha = (1 - markerPulse * 0.82) * (markerOwned ? 0.78 : 0.36);
+
+        /* Dashed vertical beacon drop-line to the zero-plane */
+        g.strokeStyle = rgba(playheadColor, markerOwned ? 0.72 : 0.32);
+        g.lineWidth = isStage ? 1.2 : 1;
+        g.setLineDash([2.5, 2.5]);
         g.beginPath();
         g.moveTo(mb.x, mb.y);
         g.lineTo(mp.x, mp.y);
         g.stroke();
         g.setLineDash([]);
 
-        g.fillStyle = P.handle;
+        /* Zero-plane anchor tick */
+        g.fillStyle = rgba(playheadColor, markerOwned ? 0.6 : 0.28);
         g.beginPath();
-        g.arc(mp.x, mp.y, 4.2, 0, Math.PI * 2);
+        g.arc(mb.x, mb.y, isStage ? 2.2 : 1.7, 0, Math.PI * 2);
         g.fill();
 
-        g.strokeStyle = playheadColor;
-        g.lineWidth = 1.6;
+        /* Expanding pulsing sonar ring */
+        g.strokeStyle = rgba(playheadColor, sonarAlpha);
+        g.lineWidth = isStage ? 1.8 : 1.4;
         g.beginPath();
-        g.arc(mp.x, mp.y, 7.5, 0, Math.PI * 2);
+        g.arc(mp.x, mp.y, sonarR, 0, Math.PI * 2);
         g.stroke();
+
+        if (markerOwned) {
+          /* Additive yellow phosphor aura */
+          g.save();
+          g.globalCompositeOperation = "lighter";
+          g.fillStyle = rgba(playheadColor, 0.36 + 0.24 * (1 - markerPulse));
+          g.beginPath();
+          g.arc(mp.x, mp.y, baseR + 4.2 + markerPulse * 2.2, 0, Math.PI * 2);
+          g.fill();
+          g.restore();
+
+          /* Solid glowing yellow/amber dot + hot pinpoint core */
+          g.fillStyle = dotYellow;
+          g.beginPath();
+          g.arc(mp.x, mp.y, baseR + 0.4 * Math.sin(markerPulse * Math.PI), 0, Math.PI * 2);
+          g.fill();
+
+          g.strokeStyle = P.bg;
+          g.lineWidth = 1;
+          g.stroke();
+
+          g.fillStyle = dotCore;
+          g.beginPath();
+          g.arc(mp.x, mp.y, baseR * 0.44, 0, Math.PI * 2);
+          g.fill();
+        } else {
+          /* Hollow time-reference ring for sibling oscillators at this timestamp */
+          g.strokeStyle = rgba(dotYellow, 0.85);
+          g.lineWidth = 1.6;
+          g.beginPath();
+          g.arc(mp.x, mp.y, baseR * 0.9, 0, Math.PI * 2);
+          g.stroke();
+        }
+
+        /* Crisp floating date/selection pill directly above the pulsing dot */
+        if (markerLabel && (isStage || markerOwned)) {
+          g.font = `${isStage ? "9.5px" : "8.5px"} ${MONO}`;
+          const tw = g.measureText(markerLabel).width;
+          const padX = 5;
+          const pillW = tw + padX * 2;
+          const pillH = isStage ? 15 : 13;
+          const px = mp.x - pillW * 0.5;
+          const py = mp.y - baseR - pillH - 7;
+          g.fillStyle = rgba(P.bg, 0.86);
+          g.strokeStyle = rgba(playheadColor, 0.65);
+          g.lineWidth = 0.9;
+          g.beginPath();
+          g.roundRect(px, py, pillW, pillH, 3);
+          g.fill();
+          g.stroke();
+
+          g.fillStyle = dotYellow;
+          g.textAlign = "center";
+          g.textBaseline = "middle";
+          g.fillText(markerLabel, mp.x, py + pillH * 0.5 + 0.5);
+        }
       }
     }
     g.restore();
@@ -616,12 +685,22 @@ export function drawDepth() {
 
   drawWireCage(g, proj, P, frontColor, 1);
 
-  /* Highlight hovered or focused slot along the 3D playhead slice */
-  const focusK =
-    ctx.focusCommit && ctx.window
-      ? slotIndexForTime(ctx.window, Date.parse(ctx.focusCommit.time))
-      : -1;
+  /* Highlight hovered or focused slot along the 3D playhead slice with a pulsing yellow dot */
+  let focusK = -1;
+  if (ctx.focusCommit && ctx.window) {
+    const ft = Date.parse(ctx.focusCommit.time);
+    if (ft >= ctx.window.startMs && ft <= ctx.window.endMs) {
+      focusK = slotIndexForTime(ctx.window, ft);
+    }
+  }
   const markerSlot = ctx.hoverSlot >= 0 ? ctx.hoverSlot : focusK;
+  let markerLabel = "";
+  if (ctx.hoverSlot >= 0 && ctx.slots[ctx.hoverSlot]) {
+    markerLabel = dateShort(ctx.slots[ctx.hoverSlot].startMs);
+  } else if (focusK >= 0 && ctx.focusCommit) {
+    markerLabel = `${dateShort(Date.parse(ctx.focusCommit.time))} · ${shortSha(ctx.focusCommit.sha, 6)}`;
+  }
+  const markerPulse = 0.5 + 0.5 * Math.sin(morph * 4.4);
 
   const res = paintWavetable3D(g, table, proj, P, {
     frontColor,
@@ -633,6 +712,9 @@ export function drawDepth() {
     breathAmp: 0.016,
     mode: "stage",
     markerSlot,
+    markerLabel,
+    markerPulse,
+    markerOwned: true,
   });
 
   /* Compute exact live Git totals for the current read-head window */
@@ -1132,6 +1214,13 @@ export function initScope2d() {
       drawDepth();
     }
   });
+
+  canvas.addEventListener("dblclick", (event) => {
+    const { k } = slotAtEvent(event);
+    const slot = ctx.slots[k];
+    if (!slot || slot.count === 0) return;
+    openDiffView(slot);
+  });
 }
 
 /**
@@ -1221,6 +1310,33 @@ export function drawModuleSurface(canvas, module, index = 0, opts = {}) {
     drawWireCage(g, proj, P, frontColor, 0.8);
   }
 
+  /* Compute pulsing yellow selection dot position for Rack oscillators */
+  let markerSlot = -1;
+  let markerLabel = "";
+  let markerOwned = true;
+  if (!isBrowser && ctx.window) {
+    const oscEndMs = ctx.rackSync
+      ? ctx.window.endMs
+      : endMsAtWtPos(model, ctx.view.span, wtPos);
+    const oscWin = windowFor(model, isoOf(oscEndMs), ctx.view.span);
+    if (ctx.hoverSlot >= 0 && ctx.rackSync && ctx.slots[ctx.hoverSlot]) {
+      const hSlot = ctx.slots[ctx.hoverSlot];
+      markerSlot = ctx.hoverSlot;
+      markerLabel = dateShort(hSlot.startMs);
+      markerOwned =
+        ctx.view.query === module.query ||
+        hSlot.commits.some((c) => !shas || shas.has(c.sha));
+    } else if (ctx.focusCommit) {
+      const ft = Date.parse(ctx.focusCommit.time);
+      if (ft >= oscWin.startMs && ft <= oscWin.endMs) {
+        markerSlot = slotIndexForTime(oscWin, ft);
+        markerLabel = dateShort(ft);
+        markerOwned = !shas || shas.has(ctx.focusCommit.sha);
+      }
+    }
+  }
+  const markerPulse = 0.5 + 0.5 * Math.sin(morph * 4.4);
+
   paintWavetable3D(g, table, proj, P, {
     frontColor,
     backColor: P.depth,
@@ -1230,6 +1346,10 @@ export function drawModuleSurface(canvas, module, index = 0, opts = {}) {
     breathPhase: morph * BREATH_RATE + phase,
     breathAmp: hovered ? 0.032 : 0.014,
     mode,
+    markerSlot,
+    markerLabel,
+    markerOwned,
+    markerPulse,
   });
 
   if (!isBrowser && opts.onPosUpdate) {

@@ -12,11 +12,15 @@ import { slotAtX, slotGeometry, slotX } from "../core/geometry.ts";
 import { focusSlot } from "../core/view.ts";
 import { drawWave } from "./canvas.js";
 import { drawDepth } from "./depth.js";
+import { drawRackFrames } from "./rack.js";
+import { openDiffView } from "../ui/diff.js";
 import { clear, el, shortSha } from "../ui/dom.js";
 
 function redraw() {
+  if (ctx.diffOpen) return;
   if (ctx.view?.depth) {
-    if (!ctx.view.rack) drawDepth();
+    if (ctx.view.rack) drawRackFrames();
+    else drawDepth();
   } else {
     drawWave();
   }
@@ -77,7 +81,7 @@ export function renderStrip() {
       `${slot.count} commit${slot.count === 1 ? "" : "s"}, churn ${slot.churn}, level ${slot.level}` +
       (slot.agentCount ? `, ${slot.agentCount} agent commit${slot.agentCount === 1 ? "" : "s"}` : "");
     cell.setAttribute("aria-label", label);
-    cell.title = label;
+    cell.title = slot.count > 0 ? `${label} — click for 3D beacon · double-click for diff` : label;
 
     cell.appendChild(el("span", "slot-date", dateShort(slot.startMs)));
 
@@ -149,6 +153,15 @@ export function initStrip() {
     const slot = ctx.slots[Number(cell.dataset.k)];
     if (!slot) return;
     setView(focusSlot(ctx.view, slot));
+  });
+
+  host.addEventListener("dblclick", (event) => {
+    const target = event.target;
+    const cell = target instanceof Element ? target.closest(".slot") : null;
+    if (!(cell instanceof HTMLElement) || cell.disabled || !ctx.view) return;
+    const slot = ctx.slots[Number(cell.dataset.k)];
+    if (!slot || slot.count === 0) return;
+    openDiffView(slot);
   });
 
   host.addEventListener("pointermove", (event) => {

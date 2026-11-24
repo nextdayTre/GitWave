@@ -3013,6 +3013,12 @@ var CHECKS_STATES = [
 	"failing"
 ];
 var REF_KINDS = ["trunk", "branch"];
+var CHANGE_STATUSES = [
+	"added",
+	"modified",
+	"deleted",
+	"renamed"
+];
 function isObj$1(value) {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -3184,6 +3190,29 @@ function parseDoc(raw) {
 		if (refIdsHere && refsHere.length !== refIdsHere.length) errors.push(`${where}.refs must be strings`);
 		for (const id of refsHere) if (!refIds.has(id)) warnings.push(`${where}.refs contains unknown ref "${id}"`);
 		commitRefs.set(sha, refsHere);
+		let changes;
+		if (Array.isArray(c.changes)) {
+			const parsedChanges = [];
+			for (const item of c.changes) {
+				if (!isObj$1(item)) continue;
+				const path = asString(item.path);
+				if (!path) continue;
+				const rawStatus = asString(item.status) ?? "modified";
+				const status = allowed(rawStatus, CHANGE_STATUSES) ? rawStatus : "modified";
+				const ins = asInt(item.insertions) ?? 0;
+				const del = asInt(item.deletions) ?? 0;
+				const patch = typeof item.patch === "string" ? item.patch.slice(0, 65536) : void 0;
+				parsedChanges.push({
+					path,
+					status,
+					insertions: Math.max(0, ins),
+					deletions: Math.max(0, del),
+					...patch !== void 0 ? { patch } : {}
+				});
+				if (parsedChanges.length >= 200) break;
+			}
+			if (parsedChanges.length) changes = parsedChanges;
+		}
 		commits.push({
 			sha,
 			parents: (parents ?? []).filter((p) => typeof p === "string"),
@@ -3198,7 +3227,8 @@ function parseDoc(raw) {
 			deletions,
 			files,
 			refs: refsHere,
-			merge: asBool(c.merge)
+			merge: asBool(c.merge),
+			...changes ? { changes } : {}
 		});
 	}
 	const tagsRaw = Array.isArray(raw.tags) ? raw.tags : [];
@@ -3781,6 +3811,8 @@ var ctx = {
 	morph: 0,
 	rackSync: true,
 	browserOpen: false,
+	diffOpen: false,
+	diffFile: null,
 	treeOpen: true,
 	treeCategory: "all",
 	favorites: /* @__PURE__ */ new Set([
@@ -5708,6 +5740,423 @@ function clear(node) {
 function shortSha(sha, length = 7) {
 	return String(sha || "").slice(0, length);
 }
+// src/ui/status.ts
+/**
+* status.ts — the one polite live region and clipboard handoff.
+*
+* Copying a command is the only "action" GitWave has; it never executes.
+*/
+var clearTimer = 0;
+function announce(message) {
+	const visible = document.getElementById("status");
+	const live = document.getElementById("liveStatus");
+	if (live) live.textContent = message;
+	if (visible) {
+		visible.textContent = message;
+		clearTimeout(clearTimer);
+		clearTimer = setTimeout(() => {
+			visible.textContent = "";
+		}, 4500);
+	}
+}
+async function copyText(text, okMessage = "copied") {
+	try {
+		await navigator.clipboard.writeText(text);
+		announce(okMessage);
+		return true;
+	} catch {
+		try {
+			const field = document.createElement("textarea");
+			field.value = text;
+			field.setAttribute("readonly", "");
+			field.style.position = "fixed";
+			field.style.top = "-1000px";
+			document.body.appendChild(field);
+			field.select();
+			document.execCommand("copy");
+			field.remove();
+			announce(okMessage);
+			return true;
+		} catch {
+			announce("clipboard is not available here");
+			return false;
+		}
+	}
+}
+// src/ui/diff.js
+/**
+* diff.js — full Commit / Diff / Changes inspector replacing the Rack/Stage
+* wavetable viewport when double-clicking a slot box, 2D scope peak, or
+* clicking "diff" in the commit card.
+*
+* Strictly read-only: every commit subject, file path and diff line is written
+* with `textContent` (never `innerHTML`), and action buttons only copy git
+* commands to the clipboard.
+*/
+function openDiffView(slotOrCommit = null) {
+	if (!ctx.view || !ctx.model) return;
+	ctx.diffOpen = true;
+	ctx.diffFile = null;
+	if (slotOrCommit && typeof slotOrCommit === "object") {
+		if ("newest" in slotOrCommit && slotOrCommit.newest) {
+			setView(focusSlot(ctx.view, slotOrCommit));
+			return;
+		}
+		if ("sha" in slotOrCommit && typeof slotOrCommit.sha === "string") {
+			setView(focusCommitView(ctx.model, ctx.view, slotOrCommit));
+			return;
+		}
+	}
+	requestRender();
+}
+function closeDiffView() {
+	if (!ctx.diffOpen) return;
+	ctx.diffOpen = false;
+	ctx.diffFile = null;
+	requestRender();
+}
+function statusBadgeMeta(status) {
+	switch (status) {
+		case "added": return {
+			glyph: "A",
+			cls: "is-add",
+			label: "added"
+		};
+		case "deleted": return {
+			glyph: "D",
+			cls: "is-del",
+			label: "deleted"
+		};
+		case "renamed": return {
+			glyph: "R",
+			cls: "is-ren",
+			label: "renamed"
+		};
+		default: return {
+			glyph: "M",
+			cls: "is-mod",
+			label: "modified"
+		};
+	}
+}
+function findWindowCommits() {
+	if (!ctx.model || !ctx.window) return [];
+	const shas = ctx.search.shas;
+	const out = [];
+	for (const c of ctx.model.doc.commits) {
+		if (shas && !shas.has(c.sha)) continue;
+		const t = Date.parse(c.time);
+		if (t >= ctx.window.startMs && t <= ctx.window.endMs) out.push(c);
+	}
+	return out;
+}
+function findChildren(sha) {
+	if (!ctx.model) return [];
+	const out = [];
+	for (const c of ctx.model.doc.commits) if (c.parents.includes(sha)) out.push(c);
+	return out;
+}
+function selectCommit(commit) {
+	if (!ctx.model || !ctx.view || !commit) return;
+	ctx.diffFile = null;
+	setView(focusCommitView(ctx.model, ctx.view, commit));
+}
+function renderUnifiedPatch(container, change) {
+	const block = el("section", "diff-file-block");
+	const head = el("header", "diff-file-head");
+	const meta = statusBadgeMeta(change.status);
+	head.appendChild(el("span", `diff-st ${meta.cls}`, meta.glyph));
+	head.appendChild(el("code", "diff-file-path", change.path));
+	const counts = el("span", "diff-file-counts");
+	counts.appendChild(el("span", "add", `+${change.insertions}`));
+	counts.appendChild(el("span", "del", `−${change.deletions}`));
+	head.appendChild(counts);
+	block.appendChild(head);
+	const code = el("div", "diff-code");
+	if (!change.patch || !change.patch.trim()) code.appendChild(el("div", "diff-empty-patch", "binary or stat-only change — no text hunks embedded"));
+	else {
+		const lines = change.patch.replace(/\r\n/g, "\n").split("\n");
+		let oldLine = 0;
+		let newLine = 0;
+		let inHunk = false;
+		for (const line of lines) if (line.startsWith("@@")) {
+			const m = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+			if (m) {
+				oldLine = Number(m[1]);
+				newLine = Number(m[2]);
+				inHunk = true;
+			}
+			const row = el("div", "diff-line dl-hunk");
+			row.appendChild(el("span", "dl-num", "…"));
+			row.appendChild(el("span", "dl-num", "…"));
+			row.appendChild(el("span", "dl-text", line));
+			code.appendChild(row);
+		} else if (line.startsWith("diff --git") || line.startsWith("index ") || line.startsWith("--- ") || line.startsWith("+++ ") || line.startsWith("rename ") || line.startsWith("new file ") || line.startsWith("deleted file ")) {
+			const row = el("div", "diff-line dl-meta");
+			row.appendChild(el("span", "dl-num", ""));
+			row.appendChild(el("span", "dl-num", ""));
+			row.appendChild(el("span", "dl-text", line));
+			code.appendChild(row);
+		} else if (inHunk && line.startsWith("+")) {
+			const row = el("div", "diff-line dl-add");
+			row.appendChild(el("span", "dl-num", ""));
+			row.appendChild(el("span", "dl-num", String(newLine++)));
+			row.appendChild(el("span", "dl-text", line));
+			code.appendChild(row);
+		} else if (inHunk && line.startsWith("-")) {
+			const row = el("div", "diff-line dl-del");
+			row.appendChild(el("span", "dl-num", String(oldLine++)));
+			row.appendChild(el("span", "dl-num", ""));
+			row.appendChild(el("span", "dl-text", line));
+			code.appendChild(row);
+		} else {
+			const row = el("div", "diff-line dl-ctx");
+			row.appendChild(el("span", "dl-num", inHunk ? String(oldLine++) : ""));
+			row.appendChild(el("span", "dl-num", inHunk ? String(newLine++) : ""));
+			row.appendChild(el("span", "dl-text", line));
+			code.appendChild(row);
+		}
+	}
+	block.appendChild(code);
+	container.appendChild(block);
+}
+function makeCopyCmdRow(labelText, cmd) {
+	const row = el("div", "diff-cmd-row");
+	row.appendChild(el("span", "diff-cmd-label", labelText));
+	row.appendChild(el("code", "diff-cmd-code", cmd));
+	const btn = document.createElement("button");
+	btn.type = "button";
+	btn.className = "op op-xs";
+	btn.textContent = "copy";
+	btn.addEventListener("click", () => copyText(cmd, `${labelText} copied`));
+	row.appendChild(btn);
+	return row;
+}
+function renderDiffView() {
+	const host = document.getElementById("diffView");
+	if (!host || !ctx.diffOpen || !ctx.model || !ctx.view || !ctx.window) return;
+	clear(host);
+	const winCommits = findWindowCommits();
+	let commit = ctx.focusCommit;
+	if (!commit && winCommits.length) commit = winCommits[winCommits.length - 1];
+	if (!commit) commit = ctx.model.doc.commits[ctx.model.doc.commits.length - 1] ?? null;
+	let slotIndex = -1;
+	let activeSlot = null;
+	if (commit) {
+		const t = Date.parse(commit.time);
+		if (t >= ctx.window.startMs && t <= ctx.window.endMs) {
+			slotIndex = slotIndexForTime(ctx.window, t);
+			activeSlot = ctx.slots[slotIndex] ?? null;
+		}
+	}
+	const slotCommits = activeSlot && activeSlot.commits.length ? [...activeSlot.commits].reverse() : commit ? [commit] : [];
+	const bar = el("header", "diff-bar");
+	const backBtn = document.createElement("button");
+	backBtn.type = "button";
+	backBtn.className = "op op-xs diff-back-btn";
+	backBtn.textContent = ctx.view.depth ? ctx.view.rack ? "← back to rack" : "← back to stage" : "← back to 2D";
+	backBtn.title = "Return to wavetable view (Esc)";
+	backBtn.addEventListener("click", closeDiffView);
+	bar.appendChild(backBtn);
+	const crumbText = activeSlot && slotIndex >= 0 ? `SLOT ${slotIndex + 1}/32 · ${dateMedium(activeSlot.startMs)} – ${dateMedium(activeSlot.endMs)} · ${activeSlot.count} commit${activeSlot.count === 1 ? "" : "s"}` : commit ? `COMMIT ${shortSha(commit.sha, 7)}` : "NO COMMIT SELECTED";
+	bar.appendChild(el("span", "diff-crumb", crumbText));
+	const nav = el("div", "diff-nav");
+	const idxInWin = commit ? winCommits.findIndex((c) => c.sha === commit.sha) : -1;
+	const prevBtn = document.createElement("button");
+	prevBtn.type = "button";
+	prevBtn.className = "op op-xs";
+	prevBtn.textContent = "‹ prev";
+	prevBtn.title = "Older commit in window";
+	prevBtn.disabled = idxInWin <= 0;
+	prevBtn.addEventListener("click", () => {
+		if (idxInWin > 0) selectCommit(winCommits[idxInWin - 1]);
+	});
+	const nextBtn = document.createElement("button");
+	nextBtn.type = "button";
+	nextBtn.className = "op op-xs";
+	nextBtn.textContent = "next ›";
+	nextBtn.title = "Newer commit in window";
+	nextBtn.disabled = idxInWin < 0 || idxInWin >= winCommits.length - 1;
+	nextBtn.addEventListener("click", () => {
+		if (idxInWin >= 0 && idxInWin < winCommits.length - 1) selectCommit(winCommits[idxInWin + 1]);
+	});
+	nav.appendChild(prevBtn);
+	nav.appendChild(nextBtn);
+	bar.appendChild(nav);
+	if (commit) {
+		const actions = el("div", "diff-actions");
+		const copyShow = document.createElement("button");
+		copyShow.type = "button";
+		copyShow.className = "op op-xs";
+		copyShow.textContent = "copy git show";
+		copyShow.addEventListener("click", () => copyText(`git show -p ${commit.sha}`, "git show -p copied"));
+		const copyShaBtn = document.createElement("button");
+		copyShaBtn.type = "button";
+		copyShaBtn.className = "op op-xs";
+		copyShaBtn.textContent = shortSha(commit.sha, 7);
+		copyShaBtn.title = `Copy full SHA (${commit.sha})`;
+		copyShaBtn.addEventListener("click", () => copyText(commit.sha, "commit sha copied"));
+		actions.appendChild(copyShow);
+		actions.appendChild(copyShaBtn);
+		bar.appendChild(actions);
+	}
+	host.appendChild(bar);
+	if (!commit) {
+		host.appendChild(el("div", "diff-empty", "Double-click any active slot to inspect its commits and diffs."));
+		return;
+	}
+	const body = el("div", "diff-body");
+	const sidebar = el("aside", "diff-sidebar");
+	const secCommits = el("div", "diff-side-sec");
+	secCommits.appendChild(el("div", "diff-side-head", `COMMITS IN SLICE (${slotCommits.length})`));
+	const cList = el("div", "diff-commit-list");
+	for (const item of slotCommits) {
+		const row = document.createElement("button");
+		row.type = "button";
+		row.className = item.sha === commit.sha ? "diff-commit-row is-active" : "diff-commit-row";
+		const top = el("div", "diff-cr-top");
+		top.appendChild(el("code", "diff-cr-sha", shortSha(item.sha, 7)));
+		const delta = el("span", "diff-cr-delta");
+		delta.appendChild(el("span", "add", `+${item.insertions}`));
+		delta.appendChild(document.createTextNode(" "));
+		delta.appendChild(el("span", "del", `−${item.deletions}`));
+		top.appendChild(delta);
+		row.appendChild(top);
+		row.appendChild(el("div", "diff-cr-subj", item.subject));
+		row.appendChild(el("div", "diff-cr-meta", `${item.author.name}${item.author.kind === "agent" ? " ◈" : ""} · ${item.files}f`));
+		row.addEventListener("click", () => selectCommit(item));
+		cList.appendChild(row);
+	}
+	secCommits.appendChild(cList);
+	sidebar.appendChild(secCommits);
+	const changes = Array.isArray(commit.changes) && commit.changes.length ? commit.changes : null;
+	const secFiles = el("div", "diff-side-sec diff-side-grow");
+	if (changes) {
+		const fHead = el("div", "diff-side-head");
+		fHead.appendChild(el("span", "", `CHANGED FILES (${changes.length})`));
+		if (ctx.diffFile) {
+			const allBtn = document.createElement("button");
+			allBtn.type = "button";
+			allBtn.className = "op op-xs";
+			allBtn.textContent = "all";
+			allBtn.addEventListener("click", () => {
+				ctx.diffFile = null;
+				renderDiffView();
+			});
+			fHead.appendChild(allBtn);
+		}
+		secFiles.appendChild(fHead);
+		const fList = el("div", "diff-file-list");
+		for (const ch of changes) {
+			const btn = document.createElement("button");
+			btn.type = "button";
+			btn.className = ctx.diffFile === ch.path ? "diff-file-row is-active" : "diff-file-row";
+			const st = statusBadgeMeta(ch.status);
+			btn.appendChild(el("span", `diff-st ${st.cls}`, st.glyph));
+			btn.appendChild(el("span", "diff-file-name", ch.path));
+			btn.appendChild(el("span", "diff-file-mini", `+${ch.insertions} −${ch.deletions}`));
+			btn.title = `${st.label}: ${ch.path}`;
+			btn.addEventListener("click", () => {
+				ctx.diffFile = ctx.diffFile === ch.path ? null : ch.path;
+				renderDiffView();
+			});
+			fList.appendChild(btn);
+		}
+		secFiles.appendChild(fList);
+	} else {
+		secFiles.appendChild(el("div", "diff-side-head", "LINEAGE & PARENTS"));
+		const lin = el("div", "diff-lineage");
+		const parents = commit.parents.map((sha) => ctx.model?.commitBySha.get(sha) ?? null).filter(Boolean);
+		const children = findChildren(commit.sha);
+		if (parents.length) {
+			lin.appendChild(el("div", "diff-lin-tag", "PARENT"));
+			for (const p of parents) {
+				const b = document.createElement("button");
+				b.type = "button";
+				b.className = "diff-lin-btn";
+				b.appendChild(el("code", "diff-cr-sha", shortSha(p.sha, 7)));
+				b.appendChild(el("span", "diff-lin-subj", p.subject));
+				b.addEventListener("click", () => selectCommit(p));
+				lin.appendChild(b);
+			}
+		}
+		if (children.length) {
+			lin.appendChild(el("div", "diff-lin-tag", "NEXT / CHILD"));
+			for (const ch of children.slice(0, 4)) {
+				const b = document.createElement("button");
+				b.type = "button";
+				b.className = "diff-lin-btn";
+				b.appendChild(el("code", "diff-cr-sha", shortSha(ch.sha, 7)));
+				b.appendChild(el("span", "diff-lin-subj", ch.subject));
+				b.addEventListener("click", () => selectCommit(ch));
+				lin.appendChild(b);
+			}
+		}
+		if (!parents.length && !children.length) lin.appendChild(el("div", "diff-lin-empty", "root commit in snapshot"));
+		secFiles.appendChild(lin);
+	}
+	sidebar.appendChild(secFiles);
+	body.appendChild(sidebar);
+	const main = el("div", "diff-main");
+	const cHead = el("section", "diff-commit-head");
+	const titleRow = el("div", "diff-title-row");
+	titleRow.appendChild(el("h2", "diff-subject", commit.subject));
+	cHead.appendChild(titleRow);
+	const metaRow = el("div", "diff-meta-row");
+	metaRow.appendChild(el("code", "diff-sha-full", commit.sha));
+	metaRow.appendChild(el("span", "diff-meta-sep", "·"));
+	metaRow.appendChild(el("span", "diff-author-name", commit.author.name));
+	if (commit.author.kind === "agent") {
+		const badge = el("span", "diff-agent-badge", commit.agent ? `◈ ${commit.agent.runtime} / ${commit.agent.model}` : "◈ agent");
+		metaRow.appendChild(badge);
+	}
+	metaRow.appendChild(el("span", "diff-meta-sep", "·"));
+	metaRow.appendChild(el("span", "diff-time", timeFull(Date.parse(commit.time))));
+	for (const refId of commit.refs) {
+		const ref = ctx.model.refsById.get(refId);
+		metaRow.appendChild(el("span", "diff-ref-pill", ref ? ref.name : refId));
+		if (ref?.pr) {
+			const prCls = ref.pr.state === "open" || ref.pr.state === "draft" ? "diff-pr-pill is-open" : "diff-pr-pill";
+			metaRow.appendChild(el("span", prCls, `PR #${ref.pr.number} · ${ref.pr.state} · ${ref.pr.review}`));
+		}
+	}
+	cHead.appendChild(metaRow);
+	const churnTotal = Math.max(1, commit.insertions + commit.deletions);
+	const addPct = Math.round(commit.insertions / churnTotal * 100);
+	const statStrip = el("div", "diff-stat-strip");
+	statStrip.appendChild(el("span", "add", `+${commit.insertions} insertions`));
+	statStrip.appendChild(el("span", "del", `−${commit.deletions} deletions`));
+	statStrip.appendChild(el("span", "diff-stat-files", `${commit.files} file${commit.files === 1 ? "" : "s"} changed`));
+	const ratioBar = el("span", "diff-ratio-bar");
+	const ratioAdd = el("i", "diff-ratio-add");
+	ratioAdd.style.width = `${addPct}%`;
+	const ratioDel = el("i", "diff-ratio-del");
+	ratioDel.style.width = `${100 - addPct}%`;
+	ratioBar.appendChild(ratioAdd);
+	ratioBar.appendChild(ratioDel);
+	statStrip.appendChild(ratioBar);
+	cHead.appendChild(statStrip);
+	main.appendChild(cHead);
+	const patchArea = el("div", "diff-patches");
+	if (changes) {
+		const visible = ctx.diffFile ? changes.filter((ch) => ch.path === ctx.diffFile) : changes;
+		for (const ch of visible) renderUnifiedPatch(patchArea, ch);
+	} else {
+		const notice = el("section", "diff-notice");
+		notice.appendChild(el("div", "diff-notice-title", "Summary-only snapshot — no embedded patch hunks for this commit"));
+		notice.appendChild(el("p", "diff-notice-body", `This snapshot (${ctx.doc?.repo.name ?? "repo"}) stores commit metadata and churn metrics without inline file patches. Run the local exporter with --patches on any Git repository and load the .gitwave.json via "open" to browse full syntax-highlighted file diffs right here, or copy a read-only git command below:`));
+		const cmds = el("div", "diff-cmds");
+		cmds.appendChild(makeCopyCmdRow("full patch", `git show -p ${commit.sha}`));
+		cmds.appendChild(makeCopyCmdRow("file stats", `git show --stat ${commit.sha}`));
+		if (commit.parents[0]) cmds.appendChild(makeCopyCmdRow("parent diff", `git diff ${shortSha(commit.parents[0], 7)}..${shortSha(commit.sha, 7)}`));
+		cmds.appendChild(makeCopyCmdRow("export local repo", "node tools/export-repo.mjs . --patches > repo.gitwave.json"));
+		notice.appendChild(cmds);
+		patchArea.appendChild(notice);
+	}
+	main.appendChild(patchArea);
+	body.appendChild(main);
+	host.appendChild(body);
+}
 // src/render/depth.js
 /**
 * depth.js — true 3D isometric volumetric wavetable engine + paired 2D scope.
@@ -6010,28 +6459,80 @@ function paintWavetable3D(g, table, proj, P, opts) {
 		else g.lineTo(activePts[s].x, activePts[s].y);
 		g.stroke();
 		const markerSlot = opts.markerSlot ?? -1;
-		if (isStage && markerSlot >= 0 && markerSlot < 32) {
+		const markerOwned = opts.markerOwned !== false;
+		const markerPulse = opts.markerPulse ?? .5;
+		const markerLabel = opts.markerLabel ?? "";
+		if (!isBrowser && markerSlot >= 0 && markerSlot < 32) {
 			const idx = Math.round(markerSlot / 31 * (S - 1));
 			const mp = activePts[idx];
 			const mb = activeBase[idx];
 			if (mp && mb) {
-				g.strokeStyle = rgba(P.handle, .55);
-				g.lineWidth = 1;
-				g.setLineDash([2, 2]);
+				const dotYellow = mixHex(playheadColor, P.handle, .25);
+				const dotCore = mixHex(playheadColor, P.handle, .78);
+				const baseR = isStage ? 4.8 : 3.9;
+				const sonarR = baseR + 3.5 + markerPulse * (isStage ? 11.5 : 8.5);
+				const sonarAlpha = (1 - markerPulse * .82) * (markerOwned ? .78 : .36);
+				g.strokeStyle = rgba(playheadColor, markerOwned ? .72 : .32);
+				g.lineWidth = isStage ? 1.2 : 1;
+				g.setLineDash([2.5, 2.5]);
 				g.beginPath();
 				g.moveTo(mb.x, mb.y);
 				g.lineTo(mp.x, mp.y);
 				g.stroke();
 				g.setLineDash([]);
-				g.fillStyle = P.handle;
+				g.fillStyle = rgba(playheadColor, markerOwned ? .6 : .28);
 				g.beginPath();
-				g.arc(mp.x, mp.y, 4.2, 0, Math.PI * 2);
+				g.arc(mb.x, mb.y, isStage ? 2.2 : 1.7, 0, Math.PI * 2);
 				g.fill();
-				g.strokeStyle = playheadColor;
-				g.lineWidth = 1.6;
+				g.strokeStyle = rgba(playheadColor, sonarAlpha);
+				g.lineWidth = isStage ? 1.8 : 1.4;
 				g.beginPath();
-				g.arc(mp.x, mp.y, 7.5, 0, Math.PI * 2);
+				g.arc(mp.x, mp.y, sonarR, 0, Math.PI * 2);
 				g.stroke();
+				if (markerOwned) {
+					g.save();
+					g.globalCompositeOperation = "lighter";
+					g.fillStyle = rgba(playheadColor, .36 + .24 * (1 - markerPulse));
+					g.beginPath();
+					g.arc(mp.x, mp.y, baseR + 4.2 + markerPulse * 2.2, 0, Math.PI * 2);
+					g.fill();
+					g.restore();
+					g.fillStyle = dotYellow;
+					g.beginPath();
+					g.arc(mp.x, mp.y, baseR + .4 * Math.sin(markerPulse * Math.PI), 0, Math.PI * 2);
+					g.fill();
+					g.strokeStyle = P.bg;
+					g.lineWidth = 1;
+					g.stroke();
+					g.fillStyle = dotCore;
+					g.beginPath();
+					g.arc(mp.x, mp.y, baseR * .44, 0, Math.PI * 2);
+					g.fill();
+				} else {
+					g.strokeStyle = rgba(dotYellow, .85);
+					g.lineWidth = 1.6;
+					g.beginPath();
+					g.arc(mp.x, mp.y, baseR * .9, 0, Math.PI * 2);
+					g.stroke();
+				}
+				if (markerLabel && (isStage || markerOwned)) {
+					g.font = `${isStage ? "9.5px" : "8.5px"} ${MONO}`;
+					const pillW = g.measureText(markerLabel).width + 10;
+					const pillH = isStage ? 15 : 13;
+					const px = mp.x - pillW * .5;
+					const py = mp.y - baseR - pillH - 7;
+					g.fillStyle = rgba(P.bg, .86);
+					g.strokeStyle = rgba(playheadColor, .65);
+					g.lineWidth = .9;
+					g.beginPath();
+					g.roundRect(px, py, pillW, pillH, 3);
+					g.fill();
+					g.stroke();
+					g.fillStyle = dotYellow;
+					g.textAlign = "center";
+					g.textBaseline = "middle";
+					g.fillText(markerLabel, mp.x, py + pillH * .5 + .5);
+				}
 			}
 		}
 		g.restore();
@@ -6146,8 +6647,16 @@ function drawDepth() {
 		centerYOffset: .02
 	});
 	drawWireCage(g, proj, P, frontColor, 1);
-	const focusK = ctx.focusCommit && ctx.window ? slotIndexForTime(ctx.window, Date.parse(ctx.focusCommit.time)) : -1;
+	let focusK = -1;
+	if (ctx.focusCommit && ctx.window) {
+		const ft = Date.parse(ctx.focusCommit.time);
+		if (ft >= ctx.window.startMs && ft <= ctx.window.endMs) focusK = slotIndexForTime(ctx.window, ft);
+	}
 	const markerSlot = ctx.hoverSlot >= 0 ? ctx.hoverSlot : focusK;
+	let markerLabel = "";
+	if (ctx.hoverSlot >= 0 && ctx.slots[ctx.hoverSlot]) markerLabel = dateShort(ctx.slots[ctx.hoverSlot].startMs);
+	else if (focusK >= 0 && ctx.focusCommit) markerLabel = `${dateShort(Date.parse(ctx.focusCommit.time))} · ${shortSha(ctx.focusCommit.sha, 6)}`;
+	const markerPulse = .5 + .5 * Math.sin(morph * 4.4);
 	const res = paintWavetable3D(g, table, proj, P, {
 		frontColor,
 		backColor: P.depth,
@@ -6157,7 +6666,10 @@ function drawDepth() {
 		breathPhase,
 		breathAmp: .016,
 		mode: "stage",
-		markerSlot
+		markerSlot,
+		markerLabel,
+		markerPulse,
+		markerOwned: true
 	});
 	let winCommits = 0;
 	let winChurn = 0;
@@ -6553,6 +7065,12 @@ function initScope2d() {
 			drawDepth();
 		}
 	});
+	canvas.addEventListener("dblclick", (event) => {
+		const { k } = slotAtEvent(event);
+		const slot = ctx.slots[k];
+		if (!slot || slot.count === 0) return;
+		openDiffView(slot);
+	});
 }
 /**
 * Render an oscillator card (Serum-style Rack) OR a Kilohearts floating 3D browser thumbnail.
@@ -6604,6 +7122,26 @@ function drawModuleSurface(canvas, module, index = 0, opts = {}) {
 		centerYOffset: isBrowser ? .04 : .02
 	});
 	if (!isBrowser) drawWireCage(g, proj, P, frontColor, .8);
+	let markerSlot = -1;
+	let markerLabel = "";
+	let markerOwned = true;
+	if (!isBrowser && ctx.window) {
+		const oscWin = windowFor(model, isoOf(ctx.rackSync ? ctx.window.endMs : endMsAtWtPos(model, ctx.view.span, wtPos)), ctx.view.span);
+		if (ctx.hoverSlot >= 0 && ctx.rackSync && ctx.slots[ctx.hoverSlot]) {
+			const hSlot = ctx.slots[ctx.hoverSlot];
+			markerSlot = ctx.hoverSlot;
+			markerLabel = dateShort(hSlot.startMs);
+			markerOwned = ctx.view.query === module.query || hSlot.commits.some((c) => !shas || shas.has(c.sha));
+		} else if (ctx.focusCommit) {
+			const ft = Date.parse(ctx.focusCommit.time);
+			if (ft >= oscWin.startMs && ft <= oscWin.endMs) {
+				markerSlot = slotIndexForTime(oscWin, ft);
+				markerLabel = dateShort(ft);
+				markerOwned = !shas || shas.has(ctx.focusCommit.sha);
+			}
+		}
+	}
+	const markerPulse = .5 + .5 * Math.sin(morph * 4.4);
 	paintWavetable3D(g, table, proj, P, {
 		frontColor,
 		backColor: P.depth,
@@ -6612,7 +7150,11 @@ function drawModuleSurface(canvas, module, index = 0, opts = {}) {
 		showPlayhead: !isBrowser || hovered,
 		breathPhase: morph * BREATH_RATE + phase,
 		breathAmp: hovered ? .032 : .014,
-		mode
+		mode,
+		markerSlot,
+		markerLabel,
+		markerOwned,
+		markerPulse
 	});
 	if (!isBrowser && opts.onPosUpdate) opts.onPosUpdate(wtPos);
 	return search.query ? search.count : model.doc.commits.length;
@@ -6672,49 +7214,6 @@ function initDepthOrbit() {
 function startDepthScan() {
 	if (ctx.reducedMotion) return;
 	ctx.depthScan = performance.now();
-}
-// src/ui/status.ts
-/**
-* status.ts — the one polite live region and clipboard handoff.
-*
-* Copying a command is the only "action" GitWave has; it never executes.
-*/
-var clearTimer = 0;
-function announce(message) {
-	const visible = document.getElementById("status");
-	const live = document.getElementById("liveStatus");
-	if (live) live.textContent = message;
-	if (visible) {
-		visible.textContent = message;
-		clearTimeout(clearTimer);
-		clearTimer = setTimeout(() => {
-			visible.textContent = "";
-		}, 4500);
-	}
-}
-async function copyText(text, okMessage = "copied") {
-	try {
-		await navigator.clipboard.writeText(text);
-		announce(okMessage);
-		return true;
-	} catch {
-		try {
-			const field = document.createElement("textarea");
-			field.value = text;
-			field.setAttribute("readonly", "");
-			field.style.position = "fixed";
-			field.style.top = "-1000px";
-			document.body.appendChild(field);
-			field.select();
-			document.execCommand("copy");
-			field.remove();
-			announce(okMessage);
-			return true;
-		} catch {
-			announce("clipboard is not available here");
-			return false;
-		}
-	}
 }
 // src/ui/knobs.js
 /**
@@ -7520,6 +8019,7 @@ function toggleTree() {
 }
 function setUiMode(mode) {
 	if (!ctx.view || !ctx.model) return;
+	ctx.diffOpen = false;
 	if (mode === "2d") {
 		ctx.browserOpen = false;
 		setView({
@@ -7540,7 +8040,8 @@ function setUiMode(mode) {
 		else requestRender();
 	} else if (mode === "stage") {
 		ctx.browserOpen = false;
-		setView({
+		if (next.depth && !next.rack) requestRender();
+		else setView({
 			...next,
 			depth: true,
 			rack: false
@@ -7548,7 +8049,8 @@ function setUiMode(mode) {
 		startDepthScan();
 	} else {
 		ctx.browserOpen = false;
-		setView({
+		if (next.depth && next.rack) requestRender();
+		else setView({
 			...next,
 			depth: true,
 			rack: true
@@ -8571,8 +9073,10 @@ function pinCurrent() {
 * commit count (or the short sha when a slot holds one commit).
 */
 function redraw() {
+	if (ctx.diffOpen) return;
 	if (ctx.view?.depth) {
-		if (!ctx.view.rack) drawDepth();
+		if (ctx.view.rack) drawRackFrames();
+		else drawDepth();
 	} else drawWave();
 }
 function bandWidth() {
@@ -8610,7 +9114,7 @@ function renderStrip() {
 		if (k === focusK) cell.classList.add("is-focus");
 		const label = `slot ${k + 1} of 32, ${dateMedium(slot.startMs)}, ${slot.count} commit${slot.count === 1 ? "" : "s"}, churn ${slot.churn}, level ${slot.level}` + (slot.agentCount ? `, ${slot.agentCount} agent commit${slot.agentCount === 1 ? "" : "s"}` : "");
 		cell.setAttribute("aria-label", label);
-		cell.title = label;
+		cell.title = slot.count > 0 ? `${label} — click for 3D beacon · double-click for diff` : label;
 		cell.appendChild(el("span", "slot-date", dateShort(slot.startMs)));
 		const meter = el("span", "slot-meter");
 		meter.setAttribute("aria-hidden", "true");
@@ -8662,6 +9166,14 @@ function initStrip() {
 		const slot = ctx.slots[Number(cell.dataset.k)];
 		if (!slot) return;
 		setView(focusSlot(ctx.view, slot));
+	});
+	host.addEventListener("dblclick", (event) => {
+		const target = event.target;
+		const cell = target instanceof Element ? target.closest(".slot") : null;
+		if (!(cell instanceof HTMLElement) || cell.disabled || !ctx.view) return;
+		const slot = ctx.slots[Number(cell.dataset.k)];
+		if (!slot || slot.count === 0) return;
+		openDiffView(slot);
 	});
 	host.addEventListener("pointermove", (event) => {
 		if (scrubbing) pickAtPointer(event);
@@ -9056,6 +9568,7 @@ function renderCommitCard() {
 	const subject = document.getElementById("commitSubject");
 	const stats = document.getElementById("commitStats");
 	const copy = document.getElementById("copyCommit");
+	const openDiff = document.getElementById("openDiffBtn");
 	if (!sha || !author || !subject || !stats || !copy) return;
 	const commit = ctx.focusCommit;
 	stats.replaceChildren();
@@ -9065,8 +9578,10 @@ function renderCommitCard() {
 		subject.textContent = "no commit focused";
 		copy.disabled = true;
 		copy.dataset.command = "";
+		if (openDiff) openDiff.disabled = true;
 		return;
 	}
+	if (openDiff) openDiff.disabled = false;
 	sha.textContent = shortSha(commit.sha, 7);
 	sha.title = commit.sha;
 	author.append(document.createTextNode(commit.author.name));
@@ -9113,11 +9628,14 @@ function renderTensionSummary() {
 }
 function initReadout() {
 	const copy = document.getElementById("copyCommit");
-	if (!copy) return;
-	copy.addEventListener("click", () => {
+	if (copy) copy.addEventListener("click", () => {
 		const command = copy.dataset.command;
 		if (!command) return;
 		copyText(command, "git command copied");
+	});
+	const openDiff = document.getElementById("openDiffBtn");
+	if (openDiff) openDiff.addEventListener("click", () => {
+		if (ctx.focusCommit) openDiffView(ctx.focusCommit);
 	});
 }
 // src/ui/legend.js
@@ -9250,6 +9768,7 @@ function initKeyboard() {
 			closeHelp();
 			closeTray();
 			closeThemeMenu();
+			closeDiffView();
 			return;
 		}
 		if (event.ctrlKey || event.metaKey) return;
@@ -9381,6 +9900,7 @@ function boot() {
 		if (ctx.browserOpen) override.depth = true;
 	}
 	if (params.has("tree")) ctx.treeOpen = params.get("tree") !== "0";
+	if (params.has("diff")) ctx.diffOpen = params.get("diff") !== "0";
 	if (params.has("focus")) {
 		const ref = model.refsById.get(params.get("focus"));
 		if (ref) {
@@ -9475,7 +9995,7 @@ function ambientFrame(now) {
 	}
 	ctx.morph = (now - ambientStart) / 1e3 + phaseParam;
 	if (ctx.depthScan >= 0 && now - ctx.depthScan >= 750) ctx.depthScan = -1;
-	if (ctx.browserOpen) {
+	if (ctx.diffOpen) {} else if (ctx.browserOpen) {
 		if (now - ambientLast >= 33) {
 			drawBrowserFrames();
 			ambientLast = now;
@@ -9514,7 +10034,7 @@ function updateMirrors() {
 	if (node && state) node.textContent = JSON.stringify(state);
 }
 function renderAll() {
-	const mode = !ctx.view?.depth ? "wave" : ctx.browserOpen ? "browser" : ctx.view.rack ? "rack" : "depth";
+	const mode = ctx.diffOpen ? "diff" : !ctx.view?.depth ? "wave" : ctx.browserOpen ? "browser" : ctx.view.rack ? "rack" : "depth";
 	const workspace = document.getElementById("workspace");
 	const tree = document.getElementById("gitTree");
 	if (tree) tree.hidden = !ctx.treeOpen;
@@ -9527,14 +10047,17 @@ function renderAll() {
 	const rackBar = document.getElementById("rackBar");
 	const rack = document.getElementById("rack");
 	const browser = document.getElementById("browser");
-	if (viewport) viewport.hidden = mode === "rack" || mode === "browser";
+	const diffView = document.getElementById("diffView");
+	if (viewport) viewport.hidden = mode === "rack" || mode === "browser" || mode === "diff";
 	if (scope2dWrap) scope2dWrap.hidden = mode !== "depth";
 	if (stageKnobs) stageKnobs.hidden = mode !== "depth";
 	if (rackBar) rackBar.hidden = mode !== "rack";
 	if (rack) rack.hidden = mode !== "rack";
 	if (browser) browser.hidden = mode !== "browser";
+	if (diffView) diffView.hidden = mode !== "diff";
 	if (ctx.treeOpen) renderTree();
-	if (mode === "rack") renderRack();
+	if (mode === "diff") renderDiffView();
+	else if (mode === "rack") renderRack();
 	else if (mode === "browser") renderBrowserGrid();
 	else if (mode === "depth") drawDepth();
 	else drawWave();
@@ -9548,7 +10071,10 @@ function renderAll() {
 		if (node) node.hidden = !expanded;
 	}
 	const hint = document.getElementById("hint");
-	if (hint) hint.textContent = mode === "rack" ? "drag any wavetable or WT POS to time-travel in sync · click card to set diff baseline · space to scan" : mode === "browser" ? "click a wavetable to load · double-click to open 3D stage · heart to favorite" : mode === "depth" ? "drag 3D to orbit · turn WT POS or press Space to scan history · hover/click 2D scope peaks to inspect" : "wheel to travel · click a commit · space to play";
+	if (hint) {
+		hint.hidden = mode === "diff";
+		hint.textContent = mode === "rack" ? "drag wavetable to time-travel in sync · click slot for yellow 3D beacon · double-click slot for diff" : mode === "browser" ? "click a wavetable to load · double-click to open 3D stage · heart to favorite" : mode === "depth" ? "drag 3D to orbit · click slot or 2D peak to inspect · double-click slot for full diff" : "wheel to travel · click a commit · double-click a slot for full diff";
+	}
 	renderStrip();
 	drawTension();
 	renderReadout();
@@ -10618,7 +11144,8 @@ select:focus {
 }
 
 .stage[data-mode="rack"] .stage-bar,
-.stage[data-mode="browser"] .stage-bar {
+.stage[data-mode="browser"] .stage-bar,
+.stage[data-mode="diff"] .stage-bar {
   display: none;
 }
 
@@ -11507,6 +12034,577 @@ select:focus {
   color: var(--dimmer);
 }
 
+/* ---- Full Commit / Diff / Changes Inspector ------------------------------ */
+
+.diff-view {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.diff-bar {
+  flex: 0 0 38px;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+
+.diff-back-btn {
+  color: var(--handle-hi);
+  border-color: color-mix(in srgb, var(--open) 52%, var(--line-hi));
+  background: color-mix(in srgb, var(--open) 14%, var(--panel-hi));
+  font-family: var(--mono);
+  font-weight: 600;
+}
+
+.diff-crumb {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--open);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.diff-nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.diff-actions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.diff-empty {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--dimmer);
+  font-family: var(--mono);
+}
+
+.diff-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+.diff-sidebar {
+  flex: 0 0 280px;
+  width: 280px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: color-mix(in srgb, var(--panel) 78%, var(--bg));
+  border-right: 1px solid var(--line);
+  overflow: hidden;
+}
+
+.diff-side-sec {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.diff-side-grow {
+  flex: 1 1 auto;
+  border-bottom: 0;
+}
+
+.diff-side-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 11px;
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  color: var(--dimmer);
+  background: var(--panel-hi);
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.diff-commit-list {
+  max-height: 195px;
+  overflow-y: auto;
+  padding: 5px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.diff-commit-row {
+  appearance: none;
+  border: 1px solid transparent;
+  background: transparent;
+  border-radius: 5px;
+  padding: 6px 8px;
+  text-align: left;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  transition: background 110ms ease, border-color 110ms ease;
+}
+
+.diff-commit-row:hover {
+  background: var(--panel-hi);
+  border-color: var(--line);
+}
+
+.diff-commit-row.is-active {
+  background: color-mix(in srgb, var(--open) 12%, var(--panel-hi));
+  border-color: color-mix(in srgb, var(--open) 55%, var(--line-hi));
+}
+
+.diff-cr-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.diff-cr-sha {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ok);
+}
+
+.diff-cr-delta {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.diff-cr-subj {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diff-cr-meta {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  color: var(--dim);
+}
+
+.diff-file-list,
+.diff-lineage {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.diff-file-row {
+  appearance: none;
+  border: 1px solid transparent;
+  background: transparent;
+  border-radius: 4px;
+  padding: 5px 7px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  text-align: left;
+}
+
+.diff-file-row:hover {
+  background: var(--panel-hi);
+}
+
+.diff-file-row.is-active {
+  background: color-mix(in srgb, var(--ok) 14%, var(--panel-hi));
+  border-color: color-mix(in srgb, var(--ok) 45%, var(--line));
+}
+
+.diff-st {
+  flex: 0 0 16px;
+  height: 16px;
+  border-radius: 3px;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.diff-st.is-add {
+  color: var(--ok-hi);
+  background: color-mix(in srgb, var(--ok) 18%, transparent);
+}
+
+.diff-st.is-mod {
+  color: var(--open);
+  background: color-mix(in srgb, var(--open) 18%, transparent);
+}
+
+.diff-st.is-del {
+  color: var(--risk);
+  background: color-mix(in srgb, var(--risk) 18%, transparent);
+}
+
+.diff-st.is-ren {
+  color: var(--review);
+  background: color-mix(in srgb, var(--review) 18%, transparent);
+}
+
+.diff-file-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diff-file-mini {
+  flex: 0 0 auto;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.diff-lin-tag {
+  font-family: var(--mono);
+  font-size: 8.5px;
+  letter-spacing: 0.08em;
+  color: var(--dimmer);
+  padding: 5px 4px 2px;
+}
+
+.diff-lin-btn {
+  appearance: none;
+  border: 1px solid var(--line-soft);
+  background: var(--panel-hi);
+  border-radius: 4px;
+  padding: 5px 7px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  text-align: left;
+}
+
+.diff-lin-btn:hover {
+  border-color: var(--line-hi);
+  background: var(--panel-hover);
+}
+
+.diff-lin-subj {
+  font-size: 11px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diff-lin-empty {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--dimmer);
+  padding: 8px 4px;
+}
+
+/* Right Main Diff Pane */
+.diff-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.diff-commit-head {
+  flex: 0 0 auto;
+  padding: 12px 16px;
+  background: color-mix(in srgb, var(--panel) 55%, var(--bg));
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.diff-subject {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: -0.01em;
+}
+
+.diff-meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--dim);
+}
+
+.diff-sha-full {
+  color: var(--ok);
+  font-size: 10px;
+}
+
+.diff-author-name {
+  color: var(--text);
+}
+
+.diff-agent-badge {
+  color: var(--agent);
+  background: color-mix(in srgb, var(--agent) 15%, transparent);
+  border: 1px solid color-mix(in srgb, var(--agent) 38%, transparent);
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 9.5px;
+}
+
+.diff-ref-pill {
+  color: var(--text);
+  background: var(--panel-hi);
+  border: 1px solid var(--line-hi);
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 9.5px;
+}
+
+.diff-pr-pill {
+  color: var(--dim);
+  background: var(--panel-hi);
+  border: 1px solid var(--line);
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 9.5px;
+}
+
+.diff-pr-pill.is-open {
+  color: var(--open);
+  border-color: color-mix(in srgb, var(--open) 45%, transparent);
+  background: color-mix(in srgb, var(--open) 12%, transparent);
+}
+
+.diff-stat-strip {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.diff-stat-files {
+  color: var(--dim);
+}
+
+.diff-ratio-bar {
+  display: inline-flex;
+  width: 110px;
+  height: 5px;
+  border-radius: 99px;
+  overflow: hidden;
+  background: var(--line);
+}
+
+.diff-ratio-add {
+  display: block;
+  height: 100%;
+  background: var(--ok);
+}
+
+.diff-ratio-del {
+  display: block;
+  height: 100%;
+  background: var(--risk);
+}
+
+.diff-patches {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px 16px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.diff-file-block {
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  overflow: hidden;
+  background: var(--panel);
+}
+
+.diff-file-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 11px;
+  background: var(--panel-hi);
+  border-bottom: 1px solid var(--line);
+}
+
+.diff-file-path {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text);
+  font-weight: 500;
+}
+
+.diff-file-counts {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 7px;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.diff-code {
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-x: auto;
+  background: var(--bg);
+}
+
+.diff-line {
+  display: grid;
+  grid-template-columns: 42px 42px minmax(0, 1fr);
+  white-space: pre;
+}
+
+.dl-num {
+  padding: 0 7px;
+  text-align: right;
+  color: var(--dimmer);
+  user-select: none;
+  border-right: 1px solid var(--line-soft);
+  font-size: 9.5px;
+}
+
+.dl-text {
+  padding: 0 10px;
+}
+
+.diff-line.dl-hunk {
+  background: color-mix(in srgb, var(--review) 13%, var(--bg));
+  color: var(--review);
+}
+
+.diff-line.dl-meta {
+  background: color-mix(in srgb, var(--panel) 80%, var(--bg));
+  color: var(--dimmer);
+}
+
+.diff-line.dl-add {
+  background: color-mix(in srgb, var(--ok) 13%, var(--bg));
+  color: var(--ok-hi);
+}
+
+.diff-line.dl-del {
+  background: color-mix(in srgb, var(--risk) 13%, var(--bg));
+  color: var(--risk);
+}
+
+.diff-line.dl-ctx {
+  color: var(--dim);
+}
+
+.diff-empty-patch {
+  padding: 12px 14px;
+  color: var(--dimmer);
+  font-size: 10.5px;
+}
+
+.diff-notice {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px 16px;
+  background: color-mix(in srgb, var(--panel) 82%, var(--bg));
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.diff-notice-title {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--open);
+}
+
+.diff-notice-body {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--dim);
+}
+
+.diff-cmds {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.diff-cmd-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 9px;
+  border-radius: 5px;
+  background: var(--bg);
+  border: 1px solid var(--line-soft);
+}
+
+.diff-cmd-label {
+  flex: 0 0 112px;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--dimmer);
+}
+
+.diff-cmd-code {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Subtle bottom stage hint */
 .hint {
   position: absolute;
@@ -12222,6 +13320,9 @@ select:focus {
       <!-- Kilohearts Borderless Floating 3D Wavetable Browser Grid -->
       <div class="browser" id="browser" role="region" aria-label="Wavetable browser grid" hidden></div>
 
+      <!-- Full Commit / Diff / Changes Inspector (replaces Rack/Stage on slot double-click) -->
+      <section class="diff-view" id="diffView" role="region" aria-label="Commit and diff inspector" hidden></section>
+
       <div class="hint" id="hint">drag wavetable to scrub · double-click to expand · space to play</div>
 
       <section class="tray" id="prTray" role="dialog" aria-label="Open pull requests" hidden>
@@ -12250,6 +13351,8 @@ select:focus {
           <span class="dock-tag">01 // COMMIT</span>
           <code class="commit-sha" id="commitSha">—</code>
           <span class="commit-author" id="commitAuthor"></span>
+          <button class="op op-xs" id="openDiffBtn" type="button"
+                  title="Open commit &amp; diff inspector (or double-click any slot)">diff</button>
           <button class="op op-xs" id="copyCommit" type="button"
                   title="Copy the git command for this commit (nothing is executed)">copy show</button>
         </div>

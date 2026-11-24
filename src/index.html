@@ -150,6 +150,9 @@
       <!-- Kilohearts Borderless Floating 3D Wavetable Browser Grid -->
       <div class="browser" id="browser" role="region" aria-label="Wavetable browser grid" hidden></div>
 
+      <!-- Full Commit / Diff / Changes Inspector (replaces Rack/Stage on slot double-click) -->
+      <section class="diff-view" id="diffView" role="region" aria-label="Commit and diff inspector" hidden></section>
+
       <div class="hint" id="hint">drag wavetable to scrub · double-click to expand · space to play</div>
 
       <section class="tray" id="prTray" role="dialog" aria-label="Open pull requests" hidden>
@@ -178,6 +181,8 @@
           <span class="dock-tag">01 // COMMIT</span>
           <code class="commit-sha" id="commitSha">—</code>
           <span class="commit-author" id="commitAuthor"></span>
+          <button class="op op-xs" id="openDiffBtn" type="button"
+                  title="Open commit &amp; diff inspector (or double-click any slot)">diff</button>
           <button class="op op-xs" id="copyCommit" type="button"
                   title="Copy the git command for this commit (nothing is executed)">copy show</button>
         </div>

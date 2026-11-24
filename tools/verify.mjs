@@ -274,6 +274,7 @@ const shots = [
   ["themes.png", "?fresh&static=1&menu=1"],
   ["rack.png", "?fresh&depth=1&static=1"],
   ["depth.png", "?fresh&depth=1&rack=0&static=1"],
+  ["diff.png", "?fresh&diff=1&static=1"],
   ["search.png", "?fresh&depth=1&query=author:maya&static=1"],
 ];
 for (const [name, query] of shots) {

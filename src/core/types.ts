@@ -56,6 +56,16 @@ export interface AgentStamp {
   model: string;
 }
 
+export type FileChangeStatus = "added" | "modified" | "deleted" | "renamed";
+
+export interface CommitFileChange {
+  path: string;
+  status: FileChangeStatus;
+  insertions: number;
+  deletions: number;
+  patch?: string;
+}
+
 export interface Commit {
   sha: string;
   parents: string[];
@@ -68,6 +78,8 @@ export interface Commit {
   files: number;
   refs: string[];
   merge: boolean;
+  /** Optional file-level diffs when exported with patch data. */
+  changes?: CommitFileChange[];
 }
 
 export interface Tag {

@@ -7,6 +7,7 @@ import { isoOf, windowFor } from "../core/samples.ts";
 import { cycleTheme, nudgeEnd, nowView, showRef } from "../core/view.ts";
 import { closeHelp, toggleHelp } from "./help.js";
 import { closeTray, toggleTray } from "./tray.js";
+import { closeDiffView } from "./diff.js";
 import { closeThemeMenu, toggleDepth, togglePlay, toggleTree } from "./controls.js";
 
 function isTyping(target) {
@@ -36,6 +37,7 @@ export function initKeyboard() {
       closeHelp();
       closeTray();
       closeThemeMenu();
+      closeDiffView();
       return;
     }
     if (event.ctrlKey || event.metaKey) return;

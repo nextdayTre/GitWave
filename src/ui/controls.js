@@ -49,6 +49,7 @@ export function toggleTree() {
 
 export function setUiMode(mode) {
   if (!ctx.view || !ctx.model) return;
+  ctx.diffOpen = false;
   if (mode === "2d") {
     ctx.browserOpen = false;
     setView({ ...ctx.view, depth: false });
@@ -62,12 +63,14 @@ export function setUiMode(mode) {
     else requestRender();
   } else if (mode === "stage") {
     ctx.browserOpen = false;
-    setView({ ...next, depth: true, rack: false });
+    if (next.depth && !next.rack) requestRender();
+    else setView({ ...next, depth: true, rack: false });
     startDepthScan();
   } else {
     /* rack */
     ctx.browserOpen = false;
-    setView({ ...next, depth: true, rack: true });
+    if (next.depth && next.rack) requestRender();
+    else setView({ ...next, depth: true, rack: true });
     startDepthScan();
   }
 }

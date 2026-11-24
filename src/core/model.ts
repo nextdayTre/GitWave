@@ -12,6 +12,8 @@
 import type {
   AuthorKind,
   Commit,
+  CommitFileChange,
+  FileChangeStatus,
   GitRef,
   Model,
   PullRequest,
@@ -39,6 +41,7 @@ const PR_STATES = ["open", "merged", "draft", "closed"];
 const REVIEW_STATES = ["none", "required", "approved", "changes_requested"];
 const CHECKS_STATES = ["none", "pending", "passing", "failing"];
 const REF_KINDS = ["trunk", "branch"];
+const CHANGE_STATUSES: FileChangeStatus[] = ["added", "modified", "deleted", "renamed"];
 
 function isObj(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -247,6 +250,31 @@ export function parseDoc(raw: unknown): ParseResult {
       if (!refIds.has(id)) warnings.push(`${where}.refs contains unknown ref "${id}"`);
     }
     commitRefs.set(sha as string, refsHere);
+    let changes: CommitFileChange[] | undefined;
+    if (Array.isArray(c.changes)) {
+      const parsedChanges: CommitFileChange[] = [];
+      for (const item of c.changes) {
+        if (!isObj(item)) continue;
+        const path = asString(item.path);
+        if (!path) continue;
+        const rawStatus = asString(item.status) ?? "modified";
+        const status: FileChangeStatus = allowed(rawStatus, CHANGE_STATUSES)
+          ? (rawStatus as FileChangeStatus)
+          : "modified";
+        const ins = asInt(item.insertions) ?? 0;
+        const del = asInt(item.deletions) ?? 0;
+        const patch = typeof item.patch === "string" ? item.patch.slice(0, 65536) : undefined;
+        parsedChanges.push({
+          path,
+          status,
+          insertions: Math.max(0, ins),
+          deletions: Math.max(0, del),
+          ...(patch !== undefined ? { patch } : {}),
+        });
+        if (parsedChanges.length >= 200) break;
+      }
+      if (parsedChanges.length) changes = parsedChanges;
+    }
     commits.push({
       sha: sha as string,
       parents: (parents ?? []).filter((p): p is string => typeof p === "string"),
@@ -259,6 +287,7 @@ export function parseDoc(raw: unknown): ParseResult {
       files: files as number,
       refs: refsHere,
       merge: asBool(c.merge),
+      ...(changes ? { changes } : {}),
     });
   }
 

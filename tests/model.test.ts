@@ -90,3 +90,37 @@ test("model: freezeDoc is idempotent", () => {
   const again = freezeDoc(doc);
   assert.equal(again, doc);
 });
+
+test("model: preserves and freezes optional file-level diff changes on commits", () => {
+  const copy = structuredClone(rawDemo()) as {
+    commits: Array<Record<string, unknown>>;
+  };
+  copy.commits[0].changes = [
+    {
+      path: "src/app.ts",
+      status: "modified",
+      insertions: 12,
+      deletions: 3,
+      patch: "@@ -1,3 +1,5 @@\n-old\n+new\n",
+    },
+    {
+      path: "src/new.ts",
+      status: "added",
+      insertions: 40,
+      deletions: 0,
+    },
+  ];
+  const res = parseDoc(copy);
+  assert.equal(res.ok, true);
+  if (!res.ok) return;
+  const frozen = freezeDoc(res.doc);
+  const first = frozen.commits.find((c) => c.changes && c.changes.length === 2);
+  assert.ok(first?.changes);
+  assert.equal(first.changes[0].path, "src/app.ts");
+  assert.equal(first.changes[0].status, "modified");
+  assert.match(first.changes[0].patch ?? "", /\+new/);
+  assert.equal(first.changes[1].status, "added");
+  assert.throws(() => {
+    (first.changes![0] as { path: string }).path = "mutated";
+  });
+});

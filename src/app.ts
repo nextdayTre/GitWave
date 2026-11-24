@@ -96,6 +96,10 @@ export interface AppContext {
   rackSync: boolean;
   /** UI sub-mode when in 3D: 'rack' | 'stage' | 'browser', or '2d' when depth=false. */
   browserOpen: boolean;
+  /** Full Commit/Diff inspector overlay replacing the Rack/Stage wavetable view. */
+  diffOpen: boolean;
+  /** Currently selected file path inside the Commit/Diff inspector (null = show all). */
+  diffFile: string | null;
   /** Kilohearts left Git tree sidebar visibility. */
   treeOpen: boolean;
   /** Active category in the Kilohearts tree / browser grid. */
@@ -150,6 +154,8 @@ export const ctx: AppContext = {
   morph: 0,
   rackSync: true,
   browserOpen: false,
+  diffOpen: false,
+  diffFile: null,
   treeOpen: true,
   treeCategory: "all",
   favorites: new Set(["merged", "ref:agent/refactor-store", "author:maya"]),

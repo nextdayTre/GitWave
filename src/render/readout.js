@@ -7,6 +7,7 @@
 import { ctx } from "../app.ts";
 import { dateFull, dateShort, timeFull } from "../core/samples.ts";
 import { wtPosOf } from "../core/view.ts";
+import { openDiffView } from "../ui/diff.js";
 import { copyText } from "../ui/status.ts";
 import { el, shortSha } from "../ui/dom.js";
 
@@ -95,6 +96,7 @@ function renderCommitCard() {
   const subject = document.getElementById("commitSubject");
   const stats = document.getElementById("commitStats");
   const copy = document.getElementById("copyCommit");
+  const openDiff = document.getElementById("openDiffBtn");
   if (!sha || !author || !subject || !stats || !copy) return;
 
   const commit = ctx.focusCommit;
@@ -106,8 +108,10 @@ function renderCommitCard() {
     subject.textContent = "no commit focused";
     copy.disabled = true;
     copy.dataset.command = "";
+    if (openDiff) openDiff.disabled = true;
     return;
   }
+  if (openDiff) openDiff.disabled = false;
 
   sha.textContent = shortSha(commit.sha, 7);
   sha.title = commit.sha;
@@ -163,12 +167,19 @@ function renderTensionSummary() {
 
 export function initReadout() {
   const copy = document.getElementById("copyCommit");
-  if (!copy) return;
-  copy.addEventListener("click", () => {
-    const command = copy.dataset.command;
-    if (!command) return;
-    copyText(command, "git command copied");
-  });
+  if (copy) {
+    copy.addEventListener("click", () => {
+      const command = copy.dataset.command;
+      if (!command) return;
+      copyText(command, "git command copied");
+    });
+  }
+  const openDiff = document.getElementById("openDiffBtn");
+  if (openDiff) {
+    openDiff.addEventListener("click", () => {
+      if (ctx.focusCommit) openDiffView(ctx.focusCommit);
+    });
+  }
 }
 
 export function versionLabel(model, index, stops) {
