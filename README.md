@@ -15,8 +15,10 @@ register grammar belongs to the 2D view. The surfaces breathe, and a glowing amb
 travels through each one as its wavetable position. The numbers live in the strip, the
 cards and the stage bar (`POS 100%`).
 
-**Open `gitwave.html` in any browser.** No install, server or network. It works from
-`file://`; the demo history is embedded.
+**Live demo:** https://nextdaytre.github.io/GitWave/
+
+**Or open `gitwave.html` locally in any browser.** No install, server or network. It works
+from `file://`; the demo history is embedded.
 
 ![GitWave, default view](docs/screenshots/signal.png)
 
