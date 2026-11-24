@@ -10,7 +10,7 @@
 import type { Model, View } from "./types.ts";
 import { SLOT_COUNT, buildSlots, clamp } from "./samples.ts";
 import type { Slot } from "./samples.ts";
-import { depthSlices } from "./depth.ts";
+import { depthSlices, historyDepthSlices } from "./depth.ts";
 import type { DepthSlice } from "./depth.ts";
 
 export interface WavetableLayerMeta {
@@ -21,6 +21,8 @@ export interface WavetableLayerMeta {
   density: number;
   centroid: number;
   commitCount: number;
+  churn: number;
+  startMs: number;
   endMs: number;
 }
 
@@ -52,6 +54,8 @@ export interface WavetableOptions {
   smooth?: number;
   /** Optional seed label (e.g. module query) for consistent harmonic character. */
   seed?: string;
+  /** When true, anchor Z-depth to the full travelable repository history for the span. */
+  fullHistory?: boolean;
 }
 
 function hashSeed(text: string): number {
@@ -113,12 +117,21 @@ interface RawFrame {
   density: number;
   centroid: number;
   commitCount: number;
+  churn: number;
+  startMs: number;
   endMs: number;
 }
 
-function summarizeSlots(slots: Slot[], endMs: number, sampleCount: number, smoothPasses: number): RawFrame {
+function summarizeSlots(
+  slots: Slot[],
+  startMs: number,
+  endMs: number,
+  sampleCount: number,
+  smoothPasses: number
+): RawFrame {
   const raw = new Float32Array(SLOT_COUNT);
   let totalCount = 0;
+  let totalChurn = 0;
   let mergeCount = 0;
   let agentCount = 0;
   let activeSlots = 0;
@@ -134,6 +147,7 @@ function summarizeSlots(slots: Slot[], endMs: number, sampleCount: number, smoot
     if (slot.count > 0) {
       activeSlots += 1;
       totalCount += slot.count;
+      totalChurn += slot.churn;
       agentCount += slot.agentCount;
       for (const c of slot.commits) {
         if (c.merge) mergeCount += 1;
@@ -164,6 +178,8 @@ function summarizeSlots(slots: Slot[], endMs: number, sampleCount: number, smoot
     density: activeSlots / SLOT_COUNT,
     centroid: weightSum > 0 ? weightedCenter / weightSum : 0.5,
     commitCount: totalCount,
+    churn: totalChurn,
+    startMs,
     endMs,
   };
 }
@@ -182,7 +198,9 @@ export function buildWavetable(
   const sampleCount = Math.max(32, Math.min(160, options.sampleCount ?? 96));
   const smooth = clamp(options.smooth ?? 0.55, 0, 1);
   const smoothPasses = Math.round(1 + smooth * 3);
-  const rawSlices = depthSlices(model, view).slice(0, 24);
+  const rawSlices = options.fullHistory
+    ? historyDepthSlices(model, view.span, 24)
+    : depthSlices(model, view).slice(0, 24);
   const seedVal = hashSeed(options.seed ?? view.query ?? view.focusRef ?? "gitwave");
 
   const rawFrames: RawFrame[] = [];
@@ -197,7 +215,13 @@ export function buildWavetable(
     const slice = rawSlices[i];
     const slots = buildSlots(model, slice.window, shas, ceiling);
     if (i === 0) frontSlots = slots;
-    const frame = summarizeSlots(slots, slice.window.endMs, sampleCount, smoothPasses);
+    const frame = summarizeSlots(
+      slots,
+      slice.window.startMs,
+      slice.window.endMs,
+      sampleCount,
+      smoothPasses
+    );
     rawFrames.push(frame);
     aggEnergy += frame.energy;
     aggMerge += frame.mergeRatio;
@@ -245,6 +269,8 @@ export function buildWavetable(
     const density = a.density + (b.density - a.density) * frac;
     const centroid = a.centroid + (b.centroid - a.centroid) * frac;
     const commitCount = Math.round(a.commitCount + (b.commitCount - a.commitCount) * frac);
+    const churn = Math.round(a.churn + (b.churn - a.churn) * frac);
+    const startMs = Math.round(a.startMs + (b.startMs - a.startMs) * frac);
     const endMs = Math.round(a.endMs + (b.endMs - a.endMs) * frac);
 
     const wave = new Float32Array(sampleCount);
@@ -300,6 +326,8 @@ export function buildWavetable(
       density,
       centroid,
       commitCount,
+      churn,
+      startMs,
       endMs,
     });
   }

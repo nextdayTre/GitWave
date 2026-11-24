@@ -7,8 +7,8 @@
  * would repeat the same window, so every layer is distinct.
  */
 
-import type { Model, View } from "./types.ts";
-import { isoOf, windowFor } from "./samples.ts";
+import type { Model, SpanKey, View } from "./types.ts";
+import { SPANS, isoOf, windowFor } from "./samples.ts";
 
 export const DEPTH_COUNT = 24;
 export const DEPTH_STRIDE_DAYS = 5;
@@ -20,6 +20,49 @@ export interface DepthSlice {
   endMs: number;
   label: string;
   window: ReturnType<typeof windowFor>;
+}
+
+/**
+ * Full travelable history stack for a given span.
+ * `d = 0` is the latest snapshot (`now`); `d = count - 1` is the oldest
+ * non-clamped window (`minEnd`). Anchoring the 3D wavetable to this full span
+ * lets the WT POS playhead glide across real repository history without
+ * collapsing the surface when the read head travels into the past.
+ */
+export function historyDepthSlices(
+  model: Model,
+  span: SpanKey,
+  count = DEPTH_COUNT
+): DepthSlice[] {
+  const maxEnd = model.snapshotMs;
+  if (span === "all") {
+    const window = windowFor(model, isoOf(maxEnd), span);
+    return [{ d: 0, startMs: window.startMs, endMs: window.endMs, label: isoOf(window.endMs), window }];
+  }
+  const minEnd = Math.min(maxEnd, model.startMs + SPANS[span]);
+  const spanRange = maxEnd - minEnd;
+  if (spanRange < 1 || count <= 1) {
+    const window = windowFor(model, isoOf(maxEnd), span);
+    return [{ d: 0, startMs: window.startMs, endMs: window.endMs, label: isoOf(window.endMs), window }];
+  }
+  const n = Math.max(2, count);
+  const slices: DepthSlice[] = [];
+  let previousEnd = Number.POSITIVE_INFINITY;
+  for (let d = 0; d < n; d++) {
+    const frac = d / (n - 1);
+    const requested = Math.round(maxEnd - frac * spanRange);
+    const window = windowFor(model, isoOf(requested), span);
+    if (d > 0 && Math.abs(window.endMs - previousEnd) < 1) continue;
+    previousEnd = window.endMs;
+    slices.push({
+      d: slices.length,
+      startMs: window.startMs,
+      endMs: window.endMs,
+      label: isoOf(window.endMs),
+      window,
+    });
+  }
+  return slices;
 }
 
 /**

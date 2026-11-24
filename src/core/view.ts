@@ -17,7 +17,7 @@ import type {
   View,
   ViewModule,
 } from "./types.ts";
-import { SLOT_COUNT, clamp, isoOf, refTipTime, windowFor } from "./samples.ts";
+import { SLOT_COUNT, SPANS, clamp, isoOf, refTipTime, windowFor } from "./samples.ts";
 import { searchCommits } from "./search.ts";
 import type { Slot } from "./samples.ts";
 import { THEME_IDS } from "./theme.ts";
@@ -428,6 +428,82 @@ export function withEnd(model: Model, view: View, endIso: string): View {
 
 export function nowView(model: Model, view: View): View {
   return { ...view, end: model.doc.repo.snapshotAt };
+}
+
+/** Travelable read-head endpoints for the current span. */
+export function historyRange(model: Model, span: SpanKey): { minEnd: number; maxEnd: number } {
+  const maxEnd = model.snapshotMs;
+  if (span === "all") return { minEnd: maxEnd, maxEnd };
+  const minEnd = Math.min(maxEnd, model.startMs + SPANS[span]);
+  return { minEnd, maxEnd };
+}
+
+/** Normalized WT POS [0..1] for the read head: 0 = oldest window, 1 = now. */
+export function wtPosOf(model: Model, view: View): number {
+  const { minEnd, maxEnd } = historyRange(model, view.span);
+  if (maxEnd <= minEnd) return 1;
+  const endMs = windowFor(model, view.end, view.span).endMs;
+  return clamp((endMs - minEnd) / (maxEnd - minEnd), 0, 1);
+}
+
+/** Map a normalized WT POS [0..1] to the exact read-head timestamp (ms). */
+export function endMsAtWtPos(model: Model, span: SpanKey, pos: number): number {
+  const { minEnd, maxEnd } = historyRange(model, span);
+  return Math.round(minEnd + clamp(pos, 0, 1) * (maxEnd - minEnd));
+}
+
+/**
+ * Scrub the repository read head to normalized WT POS [0..1].
+ * Pauses LFO autoplay if scrubbing interactively, and keeps the focused commit
+ * inside the newly scrubbed window when matching commits exist.
+ */
+export function viewAtWtPos(
+  model: Model,
+  view: View,
+  pos: number,
+  shas: Set<string> | null = null,
+  pauseMotion = false
+): View {
+  const nextEndMs = endMsAtWtPos(model, view.span, pos);
+  const window = windowFor(model, isoOf(nextEndMs), view.span);
+  let focusSha = view.focusSha;
+  let focusRef = view.focusRef;
+
+  const current = focusSha ? model.commitBySha.get(focusSha) ?? null : null;
+  const currentTime = current ? Date.parse(current.time) : Number.NaN;
+  const outside =
+    !current ||
+    !Number.isFinite(currentTime) ||
+    currentTime < window.startMs ||
+    currentTime > window.endMs ||
+    (shas !== null && !shas.has(current.sha));
+
+  if (outside) {
+    let best: Commit | null = null;
+    for (let i = model.doc.commits.length - 1; i >= 0; i--) {
+      const c = model.doc.commits[i];
+      if (c.merge) continue;
+      if (shas && !shas.has(c.sha)) continue;
+      const t = Date.parse(c.time);
+      if (t >= window.startMs && t <= window.endMs) {
+        best = c;
+        break;
+      }
+    }
+    if (best) {
+      focusSha = best.sha;
+      const refId = best.refs[0];
+      if (refId && view.refs.includes(refId)) focusRef = refId;
+    }
+  }
+
+  return {
+    ...view,
+    end: isoOf(window.endMs),
+    focusRef,
+    focusSha,
+    motion: pauseMotion && view.motion.playing ? { ...view.motion, playing: false } : view.motion,
+  };
 }
 
 /**

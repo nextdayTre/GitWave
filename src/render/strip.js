@@ -180,6 +180,7 @@ export function initCanvasPointer() {
   };
 
   canvas.addEventListener("pointermove", (event) => {
+    if (ctx.view?.depth) return;
     const { k } = slotFromEvent(event);
     if (k === ctx.hoverSlot) return;
     ctx.hoverSlot = k;
@@ -187,13 +188,14 @@ export function initCanvasPointer() {
   });
 
   canvas.addEventListener("pointerleave", () => {
+    if (ctx.view?.depth) return;
     if (ctx.hoverSlot === -1) return;
     ctx.hoverSlot = -1;
     redraw();
   });
 
   canvas.addEventListener("click", (event) => {
-    if (!ctx.view) return;
+    if (!ctx.view || ctx.view.depth) return;
     const { k } = slotFromEvent(event);
     const slot = ctx.slots[k];
     if (!slot) return;

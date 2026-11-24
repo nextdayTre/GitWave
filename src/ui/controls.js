@@ -29,11 +29,12 @@ import {
   stopsFor,
   toggleLens,
   validateView,
+  viewAtWtPos,
 } from "../core/view.ts";
 import { splitModules } from "../core/split.ts";
 import { shareFragment } from "../core/share.ts";
 import { THEME_LIST, THEMES } from "../core/theme.ts";
-import { drawDepth, startDepthScan } from "../render/depth.js";
+import { drawDepth, liveWtPos, startDepthScan } from "../render/depth.js";
 import { focusPr } from "./tray.js";
 import { createKnob } from "./knobs.js";
 import { announce, copyText } from "./status.ts";
@@ -72,9 +73,14 @@ export function setUiMode(mode) {
 }
 
 export function syncStageKnobsLive() {
-  if (!stageKnobRefs || !ctx.palette) return;
-  if (ctx.stageParams.pos === null) {
-    stageKnobRefs.pos.setValue(ctx.activeSliceZ, `${Math.round(ctx.activeSliceZ * 100)}%`);
+  if (!stageKnobRefs || !ctx.palette || !ctx.view || !ctx.model) return;
+  const pos = liveWtPos();
+  const pct = Math.round(pos * 100);
+  stageKnobRefs.pos.setValue(pos, pct >= 100 ? "NOW" : `${pct}%`);
+  if (stageKnobRefs.scanBtn) {
+    const playing = ctx.view.motion.playing;
+    stageKnobRefs.scanBtn.setAttribute("aria-pressed", playing ? "true" : "false");
+    stageKnobRefs.scanBtn.textContent = playing ? "⏸ LFO" : "▶ LFO";
   }
 }
 
@@ -85,19 +91,37 @@ function initStageKnobs() {
   const P = ctx.palette;
   const sp = ctx.stageParams;
 
+  const scanBtn = document.createElement("button");
+  scanBtn.type = "button";
+  scanBtn.className = "op op-xs op-play stage-scan-btn";
+  scanBtn.textContent = "▶ LFO";
+  scanBtn.setAttribute("aria-pressed", "false");
+  scanBtn.title = "Play/pause LFO time-travel scan across Git history (Space)";
+  scanBtn.addEventListener("click", () => togglePlay());
+
   const pos = createKnob({
     label: "WT POS",
-    value: sp.pos ?? 0.35,
+    value: liveWtPos(),
+    defaultValue: 1,
     size: 40,
     accent: P.open,
-    title: "Wavetable playhead position (drag to scrub · double-click for AUTO sweep)",
+    title: "Time-travel read head through Git history (0% oldest → 100% now · double-click for NOW)",
+    format: (v) => (Math.round(v * 100) >= 100 ? "NOW" : `${Math.round(v * 100)}%`),
     onChange(v) {
-      sp.pos = v;
-      drawDepth();
+      if (!ctx.model || !ctx.view) return;
+      if (ctx.view.span === "all") {
+        const next = setSpan(ctx.model, ctx.view, "90d");
+        setView(viewAtWtPos(ctx.model, next, v, ctx.search.shas, true));
+      } else {
+        setView(viewAtWtPos(ctx.model, ctx.view, v, ctx.search.shas, true));
+      }
     },
     onReset() {
-      sp.pos = null;
-      drawDepth();
+      if (!ctx.model || !ctx.view) return;
+      setView({
+        ...nowView(ctx.model, ctx.view),
+        motion: { ...ctx.view.motion, playing: false },
+      });
     },
   });
 
@@ -127,10 +151,11 @@ function initStageKnobs() {
     },
   });
 
+  host.appendChild(scanBtn);
   host.appendChild(pos.el);
   host.appendChild(depth.el);
   host.appendChild(smooth.el);
-  stageKnobRefs = { pos, depth, smooth };
+  stageKnobRefs = { scanBtn, pos, depth, smooth };
 }
 
 function renderPrQueue() {

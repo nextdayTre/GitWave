@@ -6,6 +6,7 @@
 
 import { ctx } from "../app.ts";
 import { dateFull, dateShort, timeFull } from "../core/samples.ts";
+import { wtPosOf } from "../core/view.ts";
 import { copyText } from "../ui/status.ts";
 import { el, shortSha } from "../ui/dom.js";
 
@@ -53,16 +54,10 @@ export function renderReadout() {
   if (windowOut) {
     if (ctx.view.depth) {
       const span = ctx.window.endMs - ctx.window.startMs;
-      const pct = ctx.model
-        ? Math.round(
-            ((ctx.window.endMs - ctx.model.startMs) /
-              Math.max(1, ctx.model.snapshotMs - ctx.model.startMs)) *
-              100
-          )
-        : 100;
+      const pct = ctx.model ? Math.round(wtPosOf(ctx.model, ctx.view) * 100) : 100;
       windowOut.textContent = ctx.view.rack
-        ? `rack · POS ${pct}% · ${ctx.view.modules.length} filters`
-        : `3D · POS ${pct}% · ${ctx.view.span}`;
+        ? `rack · WT ${pct}% · ${dateShort(ctx.window.endMs)}`
+        : `stage · WT ${pct}% · ${dateShort(ctx.window.startMs)}–${dateShort(ctx.window.endMs)}`;
       windowOut.title = `${dateShort(ctx.window.startMs)} – ${dateShort(ctx.window.endMs)} (${Math.round(
         span / 86400000
       )} days)`;

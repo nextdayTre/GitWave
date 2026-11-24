@@ -88,9 +88,12 @@ export interface AppContext {
   metric: Metric | null;
   depthSlices: DepthSlice[];
   depthPhase: number;
+  lfoDir: number;
   depthScan: number;
   /** Ambient render clock (seconds) for the fluid 3D surfaces. */
   morph: number;
+  /** Whether all Rack oscillators scrub WT POS in lockstep with the repo read head. */
+  rackSync: boolean;
   /** UI sub-mode when in 3D: 'rack' | 'stage' | 'browser', or '2d' when depth=false. */
   browserOpen: boolean;
   /** Kilohearts left Git tree sidebar visibility. */
@@ -107,10 +110,12 @@ export interface AppContext {
   stageParams: OscParams;
   /** Hovered browser thumbnail query for silky hover-scan feedback. */
   browserHoverQuery: string | null;
-  /** Cached active slice wave + Z for syncing Hero 3D & Paired 2D Oscilloscope. */
+  /** Cached active slice wave + WT POS (0=oldest..1=now) + telemetry. */
   activeSliceWave: Float32Array | null;
   activeSliceZ: number;
+  activeWtPos: number;
   activeSliceCount: number;
+  activeSliceChurn: number;
   activeSliceDate: string;
   search: SearchState;
   matchIndex: number;
@@ -139,9 +144,11 @@ export const ctx: AppContext = {
   metricSlots: [],
   metric: null,
   depthSlices: [],
-  depthPhase: 1,
+  depthPhase: 0,
+  lfoDir: 1,
   depthScan: -1,
   morph: 0,
+  rackSync: true,
   browserOpen: false,
   treeOpen: true,
   treeCategory: "all",
@@ -151,8 +158,10 @@ export const ctx: AppContext = {
   stageParams: { pos: null, depth: 0.68, smooth: 0.52 },
   browserHoverQuery: null,
   activeSliceWave: null,
-  activeSliceZ: 0.25,
+  activeSliceZ: 0,
+  activeWtPos: 1,
   activeSliceCount: 0,
+  activeSliceChurn: 0,
   activeSliceDate: "",
   search: { query: "", tokens: [], shas: null, matches: [], count: 0, error: null },
   matchIndex: -1,

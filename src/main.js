@@ -24,8 +24,8 @@ import {
   saveSeenSnapshot,
 } from "./state/autosave.ts";
 import { drawWave } from "./render/canvas.js";
-import { drawDepth, initDepthOrbit } from "./render/depth.js";
-import { drawRackFrames, renderRack } from "./render/rack.js";
+import { drawDepth, initDepthOrbit, initScope2d } from "./render/depth.js";
+import { drawRackFrames, initRackBar, renderRack } from "./render/rack.js";
 import { initCanvasPointer, initStrip, renderStrip } from "./render/strip.js";
 import { drawTension, initTension } from "./render/tension.js";
 import { initReadout, renderReadout } from "./render/readout.js";
@@ -154,12 +154,14 @@ function advanceTransport() {
   if (!ctx.view || !ctx.model) return;
   const step = transportStep(ctx.model, ctx.view, lfoDir);
   lfoDir = step.direction;
+  ctx.lfoDir = lfoDir;
   setView(step.view);
 }
 
 function lfoFrame(now) {
   if (!ctx.view?.motion.playing) {
     lfoRunning = false;
+    ctx.depthPhase = 0;
     return;
   }
   const rate = ctx.reducedMotion ? 1 : ctx.view.motion.rate;
@@ -173,7 +175,7 @@ function lfoFrame(now) {
     if (!ctx.view?.motion.playing) break;
   }
   if (ctx.view?.depth) {
-    ctx.depthPhase = Math.max(0, Math.min(1, lfoAcc / interval));
+    ctx.depthPhase = ctx.view.motion.playing ? Math.max(0, Math.min(1, lfoAcc / interval)) : 0;
   }
   requestAnimationFrame(lfoFrame);
 }
@@ -265,12 +267,14 @@ function renderAll() {
   const viewport = document.getElementById("stageViewport");
   const scope2dWrap = document.getElementById("scope2dWrap");
   const stageKnobs = document.getElementById("stageKnobs");
+  const rackBar = document.getElementById("rackBar");
   const rack = document.getElementById("rack");
   const browser = document.getElementById("browser");
 
   if (viewport) viewport.hidden = mode === "rack" || mode === "browser";
   if (scope2dWrap) scope2dWrap.hidden = mode !== "depth";
   if (stageKnobs) stageKnobs.hidden = mode !== "depth";
+  if (rackBar) rackBar.hidden = mode !== "rack";
   if (rack) rack.hidden = mode !== "rack";
   if (browser) browser.hidden = mode !== "browser";
 
@@ -290,11 +294,11 @@ function renderAll() {
   if (hint) {
     hint.textContent =
       mode === "rack"
-        ? "drag across a wavetable to scrub WT POS · double-click to expand · space to play"
+        ? "drag any wavetable or WT POS to time-travel in sync · click card to set diff baseline · space to scan"
         : mode === "browser"
           ? "click a wavetable to load · double-click to open 3D stage · heart to favorite"
           : mode === "depth"
-            ? "drag to orbit 3D perspective · double-click resets · turn knobs to sculpt"
+            ? "drag 3D to orbit · turn WT POS or press Space to scan history · hover/click 2D scope peaks to inspect"
             : "wheel to travel · click a commit · space to play";
   }
 
@@ -358,6 +362,8 @@ try {
   initStrip();
   initCanvasPointer();
   initDepthOrbit();
+  initScope2d();
+  initRackBar();
   initTension({
     open: () => {
       ctx.prFilter = null;

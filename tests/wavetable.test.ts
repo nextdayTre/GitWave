@@ -63,3 +63,29 @@ test("wavetable: distinct Git filters produce distinct harmonic timbres and cont
   assert.equal(mid.length, tMerged.sampleCount);
   assert.ok(mid.some((v) => Math.abs(v) > 0.05), "sampled slice carries non-trivial wave energy");
 });
+
+test("wavetable: fullHistory mode anchors geometry across read-head travel and tracks churn", () => {
+  const { model } = loadDemo();
+  const nowV = defaultView(model);
+  const oldV = { ...nowV, end: "2026-08-15T00:00:00Z" };
+  const win = windowFor(model, model.doc.repo.snapshotAt, nowV.span);
+  const ceiling = effectiveCeiling(model, win, null);
+
+  const tNow = buildWavetable(model, nowV, null, ceiling, {
+    sliceCount: 24,
+    sampleCount: 48,
+    seed: "all",
+    fullHistory: true,
+  });
+  const tOld = buildWavetable(model, oldV, null, ceiling, {
+    sliceCount: 24,
+    sampleCount: 48,
+    seed: "all",
+    fullHistory: true,
+  });
+
+  assert.equal(tNow.meta[0].endMs, model.snapshotMs);
+  assert.ok(tNow.meta[0].churn > 0, "layer metadata carries real churn");
+  assert.ok(tNow.meta[0].startMs < tNow.meta[0].endMs);
+  assert.deepEqual(tNow.frames[0], tOld.frames[0], "full-history terrain stays anchored when read head moves");
+});

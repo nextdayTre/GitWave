@@ -3689,6 +3689,54 @@ function searchCommits(model, raw) {
 }
 var DAY_MS = 864e5;
 /**
+* Full travelable history stack for a given span.
+* `d = 0` is the latest snapshot (`now`); `d = count - 1` is the oldest
+* non-clamped window (`minEnd`). Anchoring the 3D wavetable to this full span
+* lets the WT POS playhead glide across real repository history without
+* collapsing the surface when the read head travels into the past.
+*/
+function historyDepthSlices(model, span, count = 24) {
+	const maxEnd = model.snapshotMs;
+	if (span === "all") {
+		const window = windowFor(model, isoOf(maxEnd), span);
+		return [{
+			d: 0,
+			startMs: window.startMs,
+			endMs: window.endMs,
+			label: isoOf(window.endMs),
+			window
+		}];
+	}
+	const spanRange = maxEnd - Math.min(maxEnd, model.startMs + SPANS[span]);
+	if (spanRange < 1 || count <= 1) {
+		const window = windowFor(model, isoOf(maxEnd), span);
+		return [{
+			d: 0,
+			startMs: window.startMs,
+			endMs: window.endMs,
+			label: isoOf(window.endMs),
+			window
+		}];
+	}
+	const n = Math.max(2, count);
+	const slices = [];
+	let previousEnd = Number.POSITIVE_INFINITY;
+	for (let d = 0; d < n; d++) {
+		const frac = d / (n - 1);
+		const window = windowFor(model, isoOf(Math.round(maxEnd - frac * spanRange)), span);
+		if (d > 0 && Math.abs(window.endMs - previousEnd) < 1) continue;
+		previousEnd = window.endMs;
+		slices.push({
+			d: slices.length,
+			startMs: window.startMs,
+			endMs: window.endMs,
+			label: isoOf(window.endMs),
+			window
+		});
+	}
+	return slices;
+}
+/**
 * Build the depth stack. `d = 0` is the current window; larger `d` is older.
 * A slice is dropped once the end cannot move further back (the span clamp).
 */
@@ -3727,9 +3775,11 @@ var ctx = {
 	metricSlots: [],
 	metric: null,
 	depthSlices: [],
-	depthPhase: 1,
+	depthPhase: 0,
+	lfoDir: 1,
 	depthScan: -1,
 	morph: 0,
+	rackSync: true,
 	browserOpen: false,
 	treeOpen: true,
 	treeCategory: "all",
@@ -3752,8 +3802,10 @@ var ctx = {
 	},
 	browserHoverQuery: null,
 	activeSliceWave: null,
-	activeSliceZ: .25,
+	activeSliceZ: 0,
+	activeWtPos: 1,
 	activeSliceCount: 0,
+	activeSliceChurn: 0,
 	activeSliceDate: "",
 	search: {
 		query: "",
@@ -4770,6 +4822,70 @@ function nowView(model, view) {
 		end: model.doc.repo.snapshotAt
 	};
 }
+/** Travelable read-head endpoints for the current span. */
+function historyRange(model, span) {
+	const maxEnd = model.snapshotMs;
+	if (span === "all") return {
+		minEnd: maxEnd,
+		maxEnd
+	};
+	return {
+		minEnd: Math.min(maxEnd, model.startMs + SPANS[span]),
+		maxEnd
+	};
+}
+/** Normalized WT POS [0..1] for the read head: 0 = oldest window, 1 = now. */
+function wtPosOf(model, view) {
+	const { minEnd, maxEnd } = historyRange(model, view.span);
+	if (maxEnd <= minEnd) return 1;
+	const endMs = windowFor(model, view.end, view.span).endMs;
+	return clamp((endMs - minEnd) / (maxEnd - minEnd), 0, 1);
+}
+/** Map a normalized WT POS [0..1] to the exact read-head timestamp (ms). */
+function endMsAtWtPos(model, span, pos) {
+	const { minEnd, maxEnd } = historyRange(model, span);
+	return Math.round(minEnd + clamp(pos, 0, 1) * (maxEnd - minEnd));
+}
+/**
+* Scrub the repository read head to normalized WT POS [0..1].
+* Pauses LFO autoplay if scrubbing interactively, and keeps the focused commit
+* inside the newly scrubbed window when matching commits exist.
+*/
+function viewAtWtPos(model, view, pos, shas = null, pauseMotion = false) {
+	const window = windowFor(model, isoOf(endMsAtWtPos(model, view.span, pos)), view.span);
+	let focusSha = view.focusSha;
+	let focusRef = view.focusRef;
+	const current = focusSha ? model.commitBySha.get(focusSha) ?? null : null;
+	const currentTime = current ? Date.parse(current.time) : NaN;
+	if (!current || !Number.isFinite(currentTime) || currentTime < window.startMs || currentTime > window.endMs || shas !== null && !shas.has(current.sha)) {
+		let best = null;
+		for (let i = model.doc.commits.length - 1; i >= 0; i--) {
+			const c = model.doc.commits[i];
+			if (c.merge) continue;
+			if (shas && !shas.has(c.sha)) continue;
+			const t = Date.parse(c.time);
+			if (t >= window.startMs && t <= window.endMs) {
+				best = c;
+				break;
+			}
+		}
+		if (best) {
+			focusSha = best.sha;
+			const refId = best.refs[0];
+			if (refId && view.refs.includes(refId)) focusRef = refId;
+		}
+	}
+	return {
+		...view,
+		end: isoOf(window.endMs),
+		focusRef,
+		focusSha,
+		motion: pauseMotion && view.motion.playing ? {
+			...view.motion,
+			playing: false
+		} : view.motion
+	};
+}
 /**
 * One transport tick. Pure: the caller owns the direction and the RAF clock.
 * `sweep` loops, `bounce` reverses at the ends, `once` stops at the snapshot.
@@ -5389,9 +5505,10 @@ function sampleCatmull(arr, u) {
 	const t3 = t2 * t;
 	return clamp(.5 * (2 * p1 + (-p0 + p2) * t + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 + (-p0 + 3 * p1 - 3 * p2 + p3) * t3), 0, 1);
 }
-function summarizeSlots(slots, endMs, sampleCount, smoothPasses) {
+function summarizeSlots(slots, startMs, endMs, sampleCount, smoothPasses) {
 	const raw = /* @__PURE__ */ new Float32Array(32);
 	let totalCount = 0;
+	let totalChurn = 0;
 	let mergeCount = 0;
 	let agentCount = 0;
 	let activeSlots = 0;
@@ -5406,6 +5523,7 @@ function summarizeSlots(slots, endMs, sampleCount, smoothPasses) {
 		if (slot.count > 0) {
 			activeSlots += 1;
 			totalCount += slot.count;
+			totalChurn += slot.churn;
 			agentCount += slot.agentCount;
 			for (const c of slot.commits) if (c.merge) mergeCount += 1;
 			weightedCenter += k / 31 * (lvl + .15);
@@ -5428,6 +5546,8 @@ function summarizeSlots(slots, endMs, sampleCount, smoothPasses) {
 		density: activeSlots / 32,
 		centroid: weightSum > 0 ? weightedCenter / weightSum : .5,
 		commitCount: totalCount,
+		churn: totalChurn,
+		startMs,
 		endMs
 	};
 }
@@ -5439,7 +5559,7 @@ function buildWavetable(model, view, shas, ceiling, options = {}) {
 	const sampleCount = Math.max(32, Math.min(160, options.sampleCount ?? 96));
 	const smooth = clamp(options.smooth ?? .55, 0, 1);
 	const smoothPasses = Math.round(1 + smooth * 3);
-	const rawSlices = depthSlices(model, view).slice(0, 24);
+	const rawSlices = options.fullHistory ? historyDepthSlices(model, view.span, 24) : depthSlices(model, view).slice(0, 24);
 	const seedVal = hashSeed(options.seed ?? view.query ?? view.focusRef ?? "gitwave");
 	const rawFrames = [];
 	let frontSlots = [];
@@ -5452,7 +5572,7 @@ function buildWavetable(model, view, shas, ceiling, options = {}) {
 		const slice = rawSlices[i];
 		const slots = buildSlots(model, slice.window, shas, ceiling);
 		if (i === 0) frontSlots = slots;
-		const frame = summarizeSlots(slots, slice.window.endMs, sampleCount, smoothPasses);
+		const frame = summarizeSlots(slots, slice.window.startMs, slice.window.endMs, sampleCount, smoothPasses);
 		rawFrames.push(frame);
 		aggEnergy += frame.energy;
 		aggMerge += frame.mergeRatio;
@@ -5488,6 +5608,8 @@ function buildWavetable(model, view, shas, ceiling, options = {}) {
 		const density = a.density + (b.density - a.density) * frac;
 		const centroid = a.centroid + (b.centroid - a.centroid) * frac;
 		const commitCount = Math.round(a.commitCount + (b.commitCount - a.commitCount) * frac);
+		const churn = Math.round(a.churn + (b.churn - a.churn) * frac);
+		const startMs = Math.round(a.startMs + (b.startMs - a.startMs) * frac);
 		const endMs = Math.round(a.endMs + (b.endMs - a.endMs) * frac);
 		const wave = new Float32Array(sampleCount);
 		const envOut = new Float32Array(sampleCount);
@@ -5524,6 +5646,8 @@ function buildWavetable(model, view, shas, ceiling, options = {}) {
 			density,
 			centroid,
 			commitCount,
+			churn,
+			startMs,
 			endMs
 		});
 	}
@@ -5571,6 +5695,19 @@ function sampleWavetableSlice(table, zNorm, breathPhase = 0, breathAmp = 0) {
 	}
 	return out;
 }
+// src/ui/dom.js
+function el(tag, className, text) {
+	const node = document.createElement(tag);
+	if (className) node.className = className;
+	if (text !== void 0) node.textContent = text;
+	return node;
+}
+function clear(node) {
+	while (node.firstChild) node.removeChild(node.firstChild);
+}
+function shortSha(sha, length = 7) {
+	return String(sha || "").slice(0, length);
+}
 // src/render/depth.js
 /**
 * depth.js — true 3D isometric volumetric wavetable engine + paired 2D scope.
@@ -5591,10 +5728,34 @@ var SWEEP_RATE = .085;
 var BREATH_RATE = 1.15;
 var tableCache = /* @__PURE__ */ new Map();
 var MAX_CACHE = 48;
-function getCachedTable(model, view, shas, ceiling, sliceCount, sampleCount, smooth, seed) {
+function formatChurn(n) {
+	if (n >= 1e4) return `${(n / 1e3).toFixed(1)}k`;
+	if (n >= 1e3) return `${(n / 1e3).toFixed(2)}k`;
+	return String(Math.round(n));
+}
+/**
+* Live normalized WT POS [0..1] coupled directly to the repo read head (`view.end`),
+* with smooth sub-slot interpolation while the LFO transport is playing.
+* 0 = oldest travelable window for the span, 1 = latest snapshot (`now`).
+*/
+function liveWtPos() {
+	if (!ctx.model || !ctx.view) return 1;
+	const { minEnd, maxEnd } = historyRange(ctx.model, ctx.view.span);
+	if (maxEnd <= minEnd) return 1;
+	const baseEnd = ctx.window ? ctx.window.endMs : windowFor(ctx.model, ctx.view.end, ctx.view.span).endMs;
+	if (ctx.view.motion.playing && ctx.window && ctx.window.slotMs > 0) return clamp((clamp(baseEnd + (ctx.lfoDir || 1) * clamp(ctx.depthPhase, 0, 1) * ctx.window.slotMs, minEnd, maxEnd) - minEnd) / (maxEnd - minEnd), 0, 1);
+	return wtPosOf(ctx.model, ctx.view);
+}
+/** Live read-head timestamp (ms) matching `liveWtPos()`. */
+function liveReadHeadMs() {
+	if (!ctx.model || !ctx.view) return 0;
+	const { minEnd, maxEnd } = historyRange(ctx.model, ctx.view.span);
+	return Math.round(minEnd + liveWtPos() * (maxEnd - minEnd));
+}
+function getCachedTable(model, view, shas, ceiling, sliceCount, sampleCount, smooth, seed, fullHistory = true) {
 	const key = [
 		model.doc.repo.id,
-		view.end,
+		fullHistory ? "hist" : view.end,
 		view.span,
 		seed,
 		ceiling,
@@ -5609,7 +5770,8 @@ function getCachedTable(model, view, shas, ceiling, sliceCount, sampleCount, smo
 		sliceCount,
 		sampleCount,
 		smooth,
-		seed
+		seed,
+		fullHistory
 	});
 	if (tableCache.size >= MAX_CACHE) {
 		const oldest = tableCache.keys().next().value;
@@ -5633,14 +5795,6 @@ function fit$1(canvas) {
 		g,
 		width,
 		height
-	};
-}
-function smoothView(view) {
-	if (!view?.motion.playing || !ctx.window || !ctx.model) return view;
-	const end = Math.min(ctx.model.snapshotMs, ctx.window.endMs + Math.max(0, Math.min(1, ctx.depthPhase)) * ctx.window.slotMs);
-	return {
-		...view,
-		end: isoOf(end)
 	};
 }
 /**
@@ -5855,6 +6009,31 @@ function paintWavetable3D(g, table, proj, P, opts) {
 		for (let s = 0; s < S; s++) if (s === 0) g.moveTo(activePts[s].x, activePts[s].y);
 		else g.lineTo(activePts[s].x, activePts[s].y);
 		g.stroke();
+		const markerSlot = opts.markerSlot ?? -1;
+		if (isStage && markerSlot >= 0 && markerSlot < 32) {
+			const idx = Math.round(markerSlot / 31 * (S - 1));
+			const mp = activePts[idx];
+			const mb = activeBase[idx];
+			if (mp && mb) {
+				g.strokeStyle = rgba(P.handle, .55);
+				g.lineWidth = 1;
+				g.setLineDash([2, 2]);
+				g.beginPath();
+				g.moveTo(mb.x, mb.y);
+				g.lineTo(mp.x, mp.y);
+				g.stroke();
+				g.setLineDash([]);
+				g.fillStyle = P.handle;
+				g.beginPath();
+				g.arc(mp.x, mp.y, 4.2, 0, Math.PI * 2);
+				g.fill();
+				g.strokeStyle = playheadColor;
+				g.lineWidth = 1.6;
+				g.beginPath();
+				g.arc(mp.x, mp.y, 7.5, 0, Math.PI * 2);
+				g.stroke();
+			}
+		}
 		g.restore();
 	};
 	g.save();
@@ -5928,23 +6107,26 @@ function paintWavetable3D(g, table, proj, P, opts) {
 }
 /**
 * Hero Stage 3D renderer (Warpenter-inspired full volumetric wavetable + orbit).
+* Anchored to the full repository history for the span; the glowing amber
+* playhead slice is directly coupled to the real Git read head (`view.end`).
 */
 function drawDepth() {
 	const canvas = document.getElementById("wave");
 	if (!canvas || !ctx.view || !ctx.model || !ctx.palette || !ctx.window || !ctx.metric) return;
 	const { g, width: w, height: h } = fit$1(canvas);
 	const P = ctx.palette;
-	const view = smoothView(ctx.view);
+	const view = ctx.view;
 	const model = ctx.model;
 	const shas = ctx.search.shas;
-	const ceiling = ctx.metric.ceiling;
+	const stableCeiling = effectiveCeiling(model, windowFor(model, model.doc.repo.snapshotAt, view.span), shas);
 	const frontColor = ctx.metric.color;
 	const sp = ctx.stageParams;
-	const table = getCachedTable(model, view, shas, ceiling, 56, 112, sp.smooth, ctx.view.query || ctx.metric.label);
+	const table = getCachedTable(model, view, shas, stableCeiling, 56, 112, sp.smooth, ctx.view.query || ctx.metric.label, true);
 	ctx.camera.yaw += (ctx.camera.targetYaw - ctx.camera.yaw) * .14;
 	ctx.camera.pitch += (ctx.camera.targetPitch - ctx.camera.pitch) * .14;
 	const morph = ctx.morph ?? 0;
-	const playheadPos = sp.pos !== null ? sp.pos : (morph * SWEEP_RATE % 1 + 1) % 1;
+	const wtPos = liveWtPos();
+	const playheadZ = 1 - wtPos;
 	const breathPhase = morph * BREATH_RATE;
 	g.clearRect(0, 0, w, h);
 	g.fillStyle = P.bg;
@@ -5964,35 +6146,40 @@ function drawDepth() {
 		centerYOffset: .02
 	});
 	drawWireCage(g, proj, P, frontColor, 1);
+	const focusK = ctx.focusCommit && ctx.window ? slotIndexForTime(ctx.window, Date.parse(ctx.focusCommit.time)) : -1;
+	const markerSlot = ctx.hoverSlot >= 0 ? ctx.hoverSlot : focusK;
 	const res = paintWavetable3D(g, table, proj, P, {
 		frontColor,
 		backColor: P.depth,
 		playheadColor: P.open,
-		playheadPos,
+		playheadPos: playheadZ,
 		showPlayhead: true,
 		breathPhase,
-		breathAmp: .022,
-		mode: "stage"
+		breathAmp: .016,
+		mode: "stage",
+		markerSlot
 	});
-	if (res) {
-		ctx.activeSliceWave = res.activeSliceValues;
-		ctx.activeSliceZ = res.activeZ;
-		const metaIdx = Math.min(table.meta.length - 1, Math.round(res.activeZ * (table.meta.length - 1)));
-		const m = table.meta[metaIdx];
-		ctx.activeSliceCount = m ? m.commitCount : 0;
-		ctx.activeSliceDate = m ? dateShort(m.endMs) : "";
+	let winCommits = 0;
+	let winChurn = 0;
+	for (const s of ctx.slots) {
+		winCommits += s.count;
+		winChurn += s.churn;
 	}
+	ctx.activeWtPos = wtPos;
+	ctx.activeSliceZ = playheadZ;
+	ctx.activeSliceCount = winCommits;
+	ctx.activeSliceChurn = winChurn;
+	ctx.activeSliceDate = dateFull(liveReadHeadMs());
+	if (res) ctx.activeSliceWave = res.activeSliceValues;
 	g.save();
 	g.font = `10px ${MONO}`;
 	g.textAlign = "right";
 	g.textBaseline = "top";
-	g.fillStyle = rgba(P.open, .85);
-	const sliceNum = Math.round(playheadPos * (table.sliceCount - 1)) + 1;
-	g.fillText(`FRAME ${String(sliceNum).padStart(2, "0")}/${table.sliceCount} · POS ${Math.round(playheadPos * 100)}%`, w - 18, 14);
-	if (ctx.activeSliceDate) {
-		g.fillStyle = rgba(P.dim, .85);
-		g.fillText(`${ctx.activeSliceDate} UTC · ${ctx.activeSliceCount} commits`, w - 18, 29);
-	}
+	g.fillStyle = rgba(P.open, .92);
+	const scanTag = view.motion.playing ? " · LFO" : "";
+	g.fillText(`WT POS ${Math.round(wtPos * 100)}% · ${ctx.activeSliceDate} UTC${scanTag}`, w - 18, 14);
+	g.fillStyle = rgba(P.dim, .9);
+	g.fillText(`${winCommits} commits · ${formatChurn(winChurn)} churn · ${view.span} window`, w - 18, 29);
 	g.restore();
 	if (ctx.depthScan >= 0) {
 		const progress = Math.min(1, (performance.now() - ctx.depthScan) / 700);
@@ -6021,97 +6208,351 @@ function drawDepth() {
 	}
 	drawActiveScope();
 }
+var scopePointerActive = false;
+function updateScopeTooltip(k, canvasW) {
+	const tip = document.getElementById("scopeTooltip");
+	if (!tip) return;
+	if (!scopePointerActive || k < 0 || k >= ctx.slots.length || !ctx.window) {
+		tip.hidden = true;
+		return;
+	}
+	const slot = ctx.slots[k];
+	const dateEl = document.getElementById("scopeTipDate");
+	const statsEl = document.getElementById("scopeTipStats");
+	const shaEl = document.getElementById("scopeTipSha");
+	const authorEl = document.getElementById("scopeTipAuthor");
+	const subjectEl = document.getElementById("scopeTipSubject");
+	if (!dateEl || !statsEl || !shaEl || !authorEl || !subjectEl) return;
+	dateEl.textContent = `${dateMedium(slot.startMs)} – ${dateMedium(slot.endMs)}`;
+	if (slot.count === 0) {
+		statsEl.textContent = "quiet slot";
+		shaEl.textContent = "—";
+		authorEl.textContent = "";
+		subjectEl.textContent = "no matching commits in this slice";
+	} else {
+		const c = slot.newest;
+		let ins = 0;
+		let del = 0;
+		for (const item of slot.commits) {
+			ins += item.insertions;
+			del += item.deletions;
+		}
+		statsEl.textContent = `${slot.count} commit${slot.count === 1 ? "" : "s"} · +${ins} −${del}`;
+		shaEl.textContent = c ? shortSha(c.sha, 7) : "—";
+		authorEl.textContent = c ? `${c.author.name}${c.author.kind === "agent" ? " ◈" : ""}${slot.count > 1 ? ` (+${slot.count - 1} more)` : ""}` : "";
+		subjectEl.textContent = c ? c.subject : "";
+	}
+	const sx = slotX(k, slotGeometry(canvasW, 32));
+	const preferLeft = sx > canvasW * .62;
+	tip.hidden = false;
+	tip.style.left = preferLeft ? "" : `${Math.min(canvasW - 240, Math.max(12, sx + 12))}px`;
+	tip.style.right = preferLeft ? `${Math.min(canvasW - 240, Math.max(12, canvasW - sx + 12))}px` : "";
+}
 /**
-* Paired 2D Active Slice Oscilloscope (Warpenter + Ref #3 style).
-* Drawn directly beneath the Hero 3D stage, synced 1:1 to the travelling playhead.
+* Interactive 2D Active Slice Commit Scope (Stage mode).
+* Drawn directly beneath the Hero 3D stage and aligned 1:1 with the 32-slot
+* overview strip below it. Renders the real monotone commit-churn curve at
+* the active WT POS timestamp with clickable commit peaks, agent halos,
+* merge diamonds, open PR rings and hover inspection tooltips.
 */
 function drawActiveScope() {
 	const canvas = document.getElementById("scope2d");
-	if (!canvas || canvas.offsetParent === null || !ctx.palette || !ctx.metric) return;
+	if (!canvas || canvas.offsetParent === null || !ctx.palette || !ctx.metric || !ctx.window) return;
 	const { g, width: w, height: h } = fit$1(canvas);
 	const P = ctx.palette;
-	const wave = ctx.activeSliceWave;
+	const slots = ctx.slots;
+	if (!slots || slots.length !== 32) return;
 	const accent = ctx.metric.color;
-	const padX = 20;
-	const padY = 16;
-	const midY = h * .5;
-	const amp = (h - 32) * .44;
-	const plotW = Math.max(10, w - 40);
+	const geom = slotGeometry(w, 32);
+	const topPad = 24;
+	const botPad = 14;
+	const plotH = Math.max(24, h - topPad - botPad);
+	const baseY = topPad + plotH * .74;
+	const upAmp = plotH * .7;
+	const downAmp = plotH * .22;
+	const xs = new Array(32);
+	const ys = new Array(32);
+	const mirrorYs = new Array(32);
+	for (let k = 0; k < 32; k++) {
+		const norm = slots[k].level / 15;
+		xs[k] = slotX(k, geom);
+		ys[k] = baseY - norm * upAmp;
+		mirrorYs[k] = baseY + norm * downAmp;
+	}
+	const spline = buildSpline(xs, ys);
+	const mirrorSpline = buildSpline(xs, mirrorYs);
 	g.clearRect(0, 0, w, h);
 	g.fillStyle = P.bg;
 	g.fillRect(0, 0, w, h);
 	g.save();
 	g.strokeStyle = rgba(P.lineSoft, .9);
 	g.lineWidth = 1;
-	for (let i = 1; i < 8; i++) {
-		const gx = padX + plotW * i / 8;
+	for (let k = 4; k < 32; k += 4) {
+		const gx = xs[k];
 		g.beginPath();
-		g.moveTo(gx, padY * .6);
-		g.lineTo(gx, h - padY * .6);
+		g.moveTo(gx, 20);
+		g.lineTo(gx, h - botPad + 4);
 		g.stroke();
 	}
-	g.strokeStyle = rgba(P.line, .85);
+	g.strokeStyle = rgba(P.lineSoft, .6);
+	g.setLineDash([2, 4]);
 	g.beginPath();
-	g.moveTo(padX, midY);
-	g.lineTo(w - padX, midY);
+	g.moveTo(geom.pad, baseY - upAmp * .5);
+	g.lineTo(w - geom.pad, baseY - upAmp * .5);
+	g.stroke();
+	g.setLineDash([]);
+	g.strokeStyle = rgba(P.lineHi, .72);
+	g.beginPath();
+	g.moveTo(geom.pad, baseY);
+	g.lineTo(w - geom.pad, baseY);
 	g.stroke();
 	g.restore();
-	if (!wave || wave.length < 2) return;
-	const grad = g.createLinearGradient(0, padY, 0, h - padY);
-	grad.addColorStop(0, rgba(accent, .16));
-	grad.addColorStop(.5, rgba(accent, .02));
-	grad.addColorStop(1, rgba(accent, .16));
+	if (spline && mirrorSpline) {
+		const x0 = xs[0];
+		const x1 = xs[31];
+		const steps = Math.max(96, Math.min(240, Math.round((x1 - x0) / 3)));
+		const upGrad = g.createLinearGradient(0, baseY - upAmp, 0, baseY);
+		upGrad.addColorStop(0, rgba(accent, .28));
+		upGrad.addColorStop(1, rgba(accent, .03));
+		g.save();
+		g.beginPath();
+		g.moveTo(x0, baseY);
+		for (let i = 0; i <= steps; i++) {
+			const px = x0 + (x1 - x0) * i / steps;
+			g.lineTo(px, evalSpline(spline, px));
+		}
+		g.lineTo(x1, baseY);
+		g.closePath();
+		g.fillStyle = upGrad;
+		g.fill();
+		const downGrad = g.createLinearGradient(0, baseY, 0, baseY + downAmp);
+		downGrad.addColorStop(0, rgba(accent, .14));
+		downGrad.addColorStop(1, rgba(accent, .01));
+		g.beginPath();
+		g.moveTo(x0, baseY);
+		for (let i = 0; i <= steps; i++) {
+			const px = x0 + (x1 - x0) * i / steps;
+			g.lineTo(px, evalSpline(mirrorSpline, px));
+		}
+		g.lineTo(x1, baseY);
+		g.closePath();
+		g.fillStyle = downGrad;
+		g.fill();
+		g.strokeStyle = rgba(accent, .26);
+		g.lineWidth = 1;
+		g.beginPath();
+		for (let i = 0; i <= steps; i++) {
+			const px = x0 + (x1 - x0) * i / steps;
+			const py = evalSpline(mirrorSpline, px);
+			if (i === 0) g.moveTo(px, py);
+			else g.lineTo(px, py);
+		}
+		g.stroke();
+		g.lineJoin = "round";
+		g.lineCap = "round";
+		g.globalCompositeOperation = "lighter";
+		g.strokeStyle = rgba(accent, .28);
+		g.lineWidth = 6.5;
+		g.beginPath();
+		for (let i = 0; i <= steps; i++) {
+			const px = x0 + (x1 - x0) * i / steps;
+			const py = evalSpline(spline, px);
+			if (i === 0) g.moveTo(px, py);
+			else g.lineTo(px, py);
+		}
+		g.stroke();
+		g.globalCompositeOperation = "source-over";
+		g.strokeStyle = mixHex(accent, P.handle, .22);
+		g.lineWidth = 1.9;
+		g.beginPath();
+		for (let i = 0; i <= steps; i++) {
+			const px = x0 + (x1 - x0) * i / steps;
+			const py = evalSpline(spline, px);
+			if (i === 0) g.moveTo(px, py);
+			else g.lineTo(px, py);
+		}
+		g.stroke();
+		g.strokeStyle = rgba(P.handle, .65);
+		g.lineWidth = .7;
+		g.stroke();
+		g.restore();
+	}
+	if (ctx.model) {
+		const merges = mergeMarkers(ctx.model, ctx.window.startMs, ctx.window.endMs);
+		if (merges.length) {
+			g.save();
+			g.strokeStyle = P.okHi;
+			g.fillStyle = rgba(P.okHi, .22);
+			g.lineWidth = 1.2;
+			for (const m of merges) {
+				const mk = slotIndexForTime(ctx.window, Date.parse(m.commit.time));
+				const mx = xs[mk];
+				const my = ys[mk];
+				const r = 4.2;
+				g.beginPath();
+				g.moveTo(mx, my - r);
+				g.lineTo(mx + r, my);
+				g.lineTo(mx, my + r);
+				g.lineTo(mx - r, my);
+				g.closePath();
+				g.fill();
+				g.stroke();
+			}
+			g.restore();
+		}
+	}
+	if (ctx.model && ctx.prs?.length) {
+		g.save();
+		for (const pr of ctx.prs) {
+			const tipMs = refTipTime(ctx.model, pr.ref);
+			if (tipMs < ctx.window.startMs || tipMs > ctx.window.endMs) continue;
+			const pk = slotIndexForTime(ctx.window, tipMs);
+			const px = xs[pk];
+			const py = ys[pk];
+			g.strokeStyle = pr.stale ? P.risk : P.open;
+			g.lineWidth = 1.4;
+			g.beginPath();
+			g.arc(px, py, 6.2, 0, Math.PI * 2);
+			g.stroke();
+		}
+		g.restore();
+	}
+	const focusK = ctx.focusCommit && Date.parse(ctx.focusCommit.time) >= ctx.window.startMs && Date.parse(ctx.focusCommit.time) <= ctx.window.endMs ? slotIndexForTime(ctx.window, Date.parse(ctx.focusCommit.time)) : -1;
 	g.save();
-	g.beginPath();
-	for (let s = 0; s < wave.length; s++) {
-		const x = padX + s / (wave.length - 1) * plotW;
-		const y = midY - wave[s] * amp;
-		if (s === 0) g.moveTo(x, y);
-		else g.lineTo(x, y);
+	for (let k = 0; k < 32; k++) {
+		const slot = slots[k];
+		if (slot.count === 0) continue;
+		const px = xs[k];
+		const py = ys[k];
+		const r = Math.min(4.6, 2.4 + Math.log2(1 + slot.count) * .9);
+		if (slot.agentCount > 0) {
+			g.strokeStyle = rgba(P.agent, .85);
+			g.lineWidth = 1.4;
+			g.beginPath();
+			g.arc(px, py, r + 2.6, 0, Math.PI * 2);
+			g.stroke();
+		}
+		g.fillStyle = k === focusK ? P.handle : mixHex(accent, P.handle, .35);
+		g.beginPath();
+		g.arc(px, py, r, 0, Math.PI * 2);
+		g.fill();
 	}
-	g.lineTo(padX + plotW, midY);
-	g.lineTo(padX, midY);
-	g.closePath();
-	g.fillStyle = grad;
-	g.fill();
-	g.lineJoin = "round";
-	g.lineCap = "round";
-	g.globalCompositeOperation = "lighter";
-	g.strokeStyle = rgba(accent, .25);
-	g.lineWidth = 7;
-	g.beginPath();
-	for (let s = 0; s < wave.length; s++) {
-		const x = padX + s / (wave.length - 1) * plotW;
-		const y = midY - wave[s] * amp;
-		if (s === 0) g.moveTo(x, y);
-		else g.lineTo(x, y);
+	if (focusK >= 0 && slots[focusK].count > 0) {
+		const fx = xs[focusK];
+		const fy = ys[focusK];
+		g.strokeStyle = rgba(P.handle, .35);
+		g.lineWidth = 1;
+		g.beginPath();
+		g.moveTo(fx, topPad);
+		g.lineTo(fx, h - botPad);
+		g.stroke();
+		g.strokeStyle = P.handle;
+		g.lineWidth = 1.6;
+		g.beginPath();
+		g.arc(fx, fy, 7.2, 0, Math.PI * 2);
+		g.stroke();
 	}
-	g.stroke();
-	g.globalCompositeOperation = "source-over";
-	g.strokeStyle = mixHex(accent, P.handle, .22);
-	g.lineWidth = 1.8;
-	g.beginPath();
-	for (let s = 0; s < wave.length; s++) {
-		const x = padX + s / (wave.length - 1) * plotW;
-		const y = midY - wave[s] * amp;
-		if (s === 0) g.moveTo(x, y);
-		else g.lineTo(x, y);
+	const hk = ctx.hoverSlot;
+	if (hk >= 0 && hk < 32) {
+		const hx = xs[hk];
+		const hy = ys[hk];
+		g.fillStyle = rgba(P.open, .06);
+		g.fillRect(hx - geom.cell * .5, 22, geom.cell, plotH + 4);
+		g.strokeStyle = rgba(P.open, .72);
+		g.lineWidth = 1;
+		g.setLineDash([2, 2]);
+		g.beginPath();
+		g.moveTo(hx, 22);
+		g.lineTo(hx, h - botPad + 2);
+		g.stroke();
+		g.setLineDash([]);
+		g.strokeStyle = P.open;
+		g.lineWidth = 1.8;
+		g.beginPath();
+		g.arc(hx, hy, slots[hk].count > 0 ? 8.2 : 4.5, 0, Math.PI * 2);
+		g.stroke();
 	}
-	g.stroke();
-	g.strokeStyle = rgba(P.handle, .7);
-	g.lineWidth = .7;
-	g.stroke();
 	g.restore();
 	g.save();
 	g.font = `9.5px ${MONO}`;
 	g.textAlign = "left";
 	g.textBaseline = "top";
-	g.fillStyle = rgba(P.dim, .9);
-	g.fillText(`2D ACTIVE SLICE · ${ctx.metric.label.toUpperCase()}`, padX, 7);
+	g.fillStyle = rgba(P.dim, .92);
+	g.fillText(`2D COMMIT SCOPE · ${ctx.metric.label.toUpperCase()} · ${dateShort(ctx.window.startMs)} – ${dateShort(ctx.window.endMs)} UTC`, geom.pad, 6);
 	g.textAlign = "right";
-	g.fillStyle = rgba(P.open, .9);
-	g.fillText(`WT POS ${Math.round(ctx.activeSliceZ * 100)}%`, w - padX, 7);
+	g.fillStyle = rgba(P.open, .92);
+	g.fillText(`WT POS ${Math.round(liveWtPos() * 100)}% · ${ctx.activeSliceCount} COMMITS · ${formatChurn(ctx.activeSliceChurn)} CHURN`, w - geom.pad, 6);
 	g.restore();
+	if (scopePointerActive) updateScopeTooltip(ctx.hoverSlot, w);
+}
+/** Wire interactive hover tooltips and click/scrub commit inspection on the 2D scope. */
+function initScope2d() {
+	const canvas = document.getElementById("scope2d");
+	if (!canvas) return;
+	let scrubbing = false;
+	const slotAtEvent = (event) => {
+		const rect = canvas.getBoundingClientRect();
+		const geom = slotGeometry(rect.width, 32);
+		return {
+			k: slotAtX(event.clientX - rect.left, geom),
+			width: rect.width
+		};
+	};
+	const inspectSlot = (k) => {
+		if (!ctx.view || k < 0 || k >= ctx.slots.length) return;
+		const slot = ctx.slots[k];
+		if (!slot || !slot.newest) return;
+		if (ctx.view.focusSha !== slot.newest.sha) setView(focusSlot(ctx.view, slot));
+	};
+	const syncStripHover = (k) => {
+		const cells = document.querySelectorAll("#slots .slot.is-hover");
+		for (const c of cells) c.classList.remove("is-hover");
+		if (k >= 0) {
+			const match = document.querySelector(`#slots .slot[data-k="${k}"]`);
+			if (match) match.classList.add("is-hover");
+		}
+	};
+	canvas.addEventListener("pointerdown", (event) => {
+		if (event.button !== 0) return;
+		scrubbing = true;
+		scopePointerActive = true;
+		const { k, width } = slotAtEvent(event);
+		ctx.hoverSlot = k;
+		syncStripHover(k);
+		inspectSlot(k);
+		drawDepth();
+		updateScopeTooltip(k, width);
+		try {
+			canvas.setPointerCapture(event.pointerId);
+		} catch {}
+	});
+	canvas.addEventListener("pointermove", (event) => {
+		scopePointerActive = true;
+		const { k, width } = slotAtEvent(event);
+		if (scrubbing) inspectSlot(k);
+		if (k !== ctx.hoverSlot) {
+			ctx.hoverSlot = k;
+			syncStripHover(k);
+			drawDepth();
+		}
+		updateScopeTooltip(k, width);
+	});
+	const endScrub = () => {
+		scrubbing = false;
+	};
+	canvas.addEventListener("pointerup", endScrub);
+	canvas.addEventListener("pointercancel", endScrub);
+	canvas.addEventListener("pointerleave", () => {
+		scrubbing = false;
+		scopePointerActive = false;
+		const tip = document.getElementById("scopeTooltip");
+		if (tip) tip.hidden = true;
+		syncStripHover(-1);
+		if (ctx.hoverSlot !== -1) {
+			ctx.hoverSlot = -1;
+			drawDepth();
+		}
+	});
 }
 /**
 * Render an oscillator card (Serum-style Rack) OR a Kilohearts floating 3D browser thumbnail.
@@ -6125,19 +6566,20 @@ function drawModuleSurface(canvas, module, index = 0, opts = {}) {
 	const isBrowser = mode === "browser";
 	const search = searchCommits(model, module.query);
 	const shas = search.shas;
-	const ceiling = effectiveCeiling(model, ctx.window, shas);
+	const ceiling = effectiveCeiling(model, windowFor(model, model.doc.repo.snapshotAt, ctx.view.span), shas);
 	const frontColor = opts.color ?? (isBrowser ? P.ok : P.identity[module.colorKey] ?? P.ok);
 	const osc = getOscParams(module.query);
 	const smooth = opts.smooth ?? osc.smooth;
 	const depthSpread = opts.depth ?? osc.depth;
 	const sliceCount = isBrowser ? 36 : 44;
 	const sampleCount = isBrowser ? 72 : 88;
-	const table = getCachedTable(model, smoothView(ctx.view), shas, ceiling, sliceCount, sampleCount, smooth, module.query || module.name);
+	const table = getCachedTable(model, ctx.view, shas, ceiling, sliceCount, sampleCount, smooth, module.query || module.name, true);
 	const morph = ctx.morph ?? 0;
 	const phase = index % 8 * .42;
 	const hovered = isBrowser && ctx.browserHoverQuery === module.query;
 	const speedMul = hovered ? 2.4 : 1;
-	const playheadPos = !isBrowser && osc.pos !== null ? osc.pos : ((morph * SWEEP_RATE * speedMul + phase * .35) % 1 + 1) % 1;
+	const wtPos = isBrowser ? ((morph * SWEEP_RATE * speedMul + phase * .35) % 1 + 1) % 1 : clamp(opts.wtPos ?? liveWtPos(), 0, 1);
+	const playheadZ = 1 - wtPos;
 	g.clearRect(0, 0, w, h);
 	if (!isBrowser) {
 		g.fillStyle = P.bg;
@@ -6166,13 +6608,13 @@ function drawModuleSurface(canvas, module, index = 0, opts = {}) {
 		frontColor,
 		backColor: P.depth,
 		playheadColor: P.open,
-		playheadPos,
+		playheadPos: playheadZ,
 		showPlayhead: !isBrowser || hovered,
 		breathPhase: morph * BREATH_RATE + phase,
-		breathAmp: hovered ? .038 : .02,
+		breathAmp: hovered ? .032 : .014,
 		mode
 	});
-	if (!isBrowser && opts.onPosUpdate) opts.onPosUpdate(playheadPos);
+	if (!isBrowser && opts.onPosUpdate) opts.onPosUpdate(wtPos);
 	return search.query ? search.count : model.doc.commits.length;
 }
 /** Enable silky interactive 3D orbit (drag to rotate, double-click to reset) on the Hero Stage. */
@@ -6273,19 +6715,6 @@ async function copyText(text, okMessage = "copied") {
 			return false;
 		}
 	}
-}
-// src/ui/dom.js
-function el(tag, className, text) {
-	const node = document.createElement(tag);
-	if (className) node.className = className;
-	if (text !== void 0) node.textContent = text;
-	return node;
-}
-function clear(node) {
-	while (node.firstChild) node.removeChild(node.firstChild);
-}
-function shortSha(sha, length = 7) {
-	return String(sha || "").slice(0, length);
 }
 // src/ui/knobs.js
 /**
@@ -6931,933 +7360,47 @@ function renderBrowserGrid() {
 	if (!filtered.length) grid.appendChild(el("p", "browser-empty", "No favorites yet — click a heart to pin a wavetable here."));
 	else drawBrowserFrames();
 }
-// src/render/rack.js
-/**
-* rack.js — Serum / Vital-inspired 3D wavetable oscillator rack.
-*
-* Each oscillator bay is one live Git filter rendered as a volumetric 3D
-* isometric wavetable with a glowing travelling playhead slice, `< >` source
-* cycling, interactive canvas scrubbing and tactile Warpenter rotary knobs
-* (`WT POS`, `DEPTH`, `SMOOTH`).
-*/
-var LETTERS = [
-	"A",
-	"B",
-	"C",
-	"D",
-	"E",
-	"F",
-	"G",
-	"H"
+// src/core/split.ts
+var COLOR_ORDER = [
+	1,
+	2,
+	3,
+	4,
+	5,
+	0
 ];
-var rackCards = [];
-function label(index) {
-	return `OSC ${LETTERS[index] ?? index + 1}`;
-}
-/** Redraw the existing oscillator canvases and sync AUTO WT POS knobs without rebuilding DOM. */
-function drawRackFrames() {
-	for (const card of rackCards) {
-		const osc = getOscParams(card.module.query);
-		drawModuleSurface(card.canvas, card.module, card.index, {
-			mode: "rack",
-			onPosUpdate(livePos) {
-				if (osc.pos === null && card.posKnob) card.posKnob.setValue(livePos, `${Math.round(livePos * 100)}%`);
-				if (card.posBadge) card.posBadge.textContent = `${Math.round(livePos * 100)}`;
-			}
+function splitModules(model, query, by, limit = 4) {
+	const search = searchCommits(model, query);
+	const commits = search.query ? search.matches : model.doc.commits;
+	const groups = /* @__PURE__ */ new Map();
+	for (const commit of commits) if (by === "author") {
+		const name = commit.author.name;
+		const key = `author:${name.split(/\s+/)[0].toLowerCase()}`;
+		const existing = groups.get(key);
+		if (existing) existing.count += 1;
+		else groups.set(key, {
+			name,
+			query: key,
+			count: 1,
+			colorKey: 0
+		});
+	} else for (const refId of commit.refs) {
+		const ref = model.refsById.get(refId);
+		if (!ref) continue;
+		const key = `ref:${ref.id}`;
+		const existing = groups.get(key);
+		if (existing) existing.count += 1;
+		else groups.set(key, {
+			name: ref.id,
+			query: key,
+			count: 1,
+			colorKey: ref.colorKey
 		});
 	}
-}
-function cycleModuleSource(index, direction) {
-	if (!ctx.model || !ctx.view) return;
-	const catalog = catalogItems(ctx.model);
-	if (!catalog.length) return;
-	const current = ctx.view.modules[index];
-	if (!current) return;
-	const curIdx = catalog.findIndex((it) => it.query === current.query);
-	const start = curIdx >= 0 ? curIdx : 0;
-	const otherQueries = new Set(ctx.view.modules.filter((_, i) => i !== index).map((m) => m.query));
-	let pick = catalog[(start + direction + catalog.length) % catalog.length];
-	for (let step = 1; step <= catalog.length; step++) {
-		const cand = catalog[((start + direction * step) % catalog.length + catalog.length) % catalog.length];
-		if (!otherQueries.has(cand.query)) {
-			pick = cand;
-			break;
-		}
-	}
-	const modules = ctx.view.modules.map((m, i) => i === index ? {
-		name: pick.name,
-		query: pick.query,
-		colorKey: pick.colorKey
-	} : m);
-	const next = {
-		...ctx.view,
-		modules,
-		query: pick.query
-	};
-	const focused = focusFirstMatch(ctx.model, next, pick.query);
-	ctx.matchIndex = focused.index;
-	setView(focused.view);
-	startDepthScan();
-}
-function renderRack() {
-	const rack = document.getElementById("rack");
-	if (!rack || !ctx.view || !ctx.model || !ctx.palette) return;
-	clear(rack);
-	rackCards = [];
-	const countMods = ctx.view.modules.length;
-	rack.dataset.cols = String(Math.min(4, Math.max(1, countMods)));
-	ctx.view.modules.forEach((module, index) => {
-		const count = module.query ? searchCommits(ctx.model, module.query).count : ctx.model.doc.commits.length;
-		const selected = ctx.view.query === module.query;
-		const color = ctx.palette.identity[module.colorKey] ?? ctx.palette.ok;
-		const osc = getOscParams(module.query);
-		const card = el("article", "module");
-		card.style.setProperty("--sw", color);
-		if (selected) card.classList.add("is-selected");
-		const topbar = el("header", "module-bar");
-		const led = el("span", "osc-led");
-		led.style.setProperty("--sw", color);
-		topbar.appendChild(led);
-		topbar.appendChild(el("span", "module-osc", label(index)));
-		topbar.appendChild(el("span", "module-type", "WAVETABLE"));
-		const barActions = el("div", "module-bar-actions");
-		const open = document.createElement("button");
-		open.type = "button";
-		open.className = "osc-btn";
-		open.textContent = "⤢";
-		open.title = "Expand into Hero 3D + 2D Stage";
-		open.setAttribute("aria-label", `Open ${module.name}`);
-		open.addEventListener("click", (event) => {
-			event.stopPropagation();
-			if (!ctx.view) return;
-			ctx.browserOpen = false;
-			setView(expandModule(ctx.view, module));
-			startDepthScan();
-		});
-		const remove = document.createElement("button");
-		remove.type = "button";
-		remove.className = "osc-btn";
-		remove.textContent = "×";
-		remove.title = "Remove this oscillator";
-		remove.setAttribute("aria-label", `Remove ${module.name}`);
-		remove.disabled = ctx.view.modules.length <= 1;
-		remove.addEventListener("click", (event) => {
-			event.stopPropagation();
-			if (ctx.view) setView(removeModule(ctx.view, index));
-		});
-		barActions.appendChild(open);
-		barActions.appendChild(remove);
-		topbar.appendChild(barActions);
-		const sourceRow = el("div", "module-source");
-		const nameBtn = document.createElement("button");
-		nameBtn.type = "button";
-		nameBtn.className = "module-name-btn";
-		nameBtn.setAttribute("aria-pressed", selected ? "true" : "false");
-		nameBtn.title = `${module.name} (${module.query || "all commits"}) — click to solo`;
-		nameBtn.appendChild(el("span", "module-name", module.name));
-		nameBtn.appendChild(el("span", "module-count", String(count)));
-		nameBtn.addEventListener("click", () => {
-			if (!ctx.view || !ctx.model) return;
-			const focused = focusFirstMatch(ctx.model, {
-				...ctx.view,
-				query: module.query
-			}, module.query);
-			ctx.matchIndex = focused.index;
-			setView(focused.view);
-			startDepthScan();
-		});
-		const prevSrc = document.createElement("button");
-		prevSrc.type = "button";
-		prevSrc.className = "osc-step";
-		prevSrc.textContent = "‹";
-		prevSrc.title = "Previous Git wavetable source";
-		prevSrc.setAttribute("aria-label", `Previous source for ${label(index)}`);
-		prevSrc.addEventListener("click", (event) => {
-			event.stopPropagation();
-			cycleModuleSource(index, -1);
-		});
-		const nextSrc = document.createElement("button");
-		nextSrc.type = "button";
-		nextSrc.className = "osc-step";
-		nextSrc.textContent = "›";
-		nextSrc.title = "Next Git wavetable source";
-		nextSrc.setAttribute("aria-label", `Next source for ${label(index)}`);
-		nextSrc.addEventListener("click", (event) => {
-			event.stopPropagation();
-			cycleModuleSource(index, 1);
-		});
-		sourceRow.appendChild(nameBtn);
-		sourceRow.appendChild(prevSrc);
-		sourceRow.appendChild(nextSrc);
-		const viewport = el("div", "module-viewport");
-		const canvas = document.createElement("canvas");
-		canvas.className = "module-wave";
-		canvas.setAttribute("aria-hidden", "true");
-		viewport.appendChild(canvas);
-		const posBadge = el("span", "osc-pos-readout", osc.pos !== null ? String(Math.round(osc.pos * 100)) : "AUTO");
-		viewport.appendChild(posBadge);
-		let drag = null;
-		viewport.addEventListener("pointerdown", (event) => {
-			if (event.button !== 0) return;
-			drag = {
-				x: event.clientX,
-				y: event.clientY,
-				moved: false
-			};
-			try {
-				viewport.setPointerCapture(event.pointerId);
-			} catch {}
-		});
-		viewport.addEventListener("pointermove", (event) => {
-			if (!drag) return;
-			const dx = event.clientX - drag.x;
-			if (Math.abs(dx) > 4) drag.moved = true;
-			if (drag.moved) {
-				const rect = viewport.getBoundingClientRect();
-				const norm = clamp((event.clientX - rect.left) / Math.max(1, rect.width), 0, 1);
-				osc.pos = norm;
-				posKnob.setValue(norm, `${Math.round(norm * 100)}%`);
-				posBadge.textContent = String(Math.round(norm * 100));
-				drawModuleSurface(canvas, module, index, { mode: "rack" });
-			}
-		});
-		viewport.addEventListener("pointerup", () => {
-			const wasDrag = drag?.moved;
-			drag = null;
-			if (!wasDrag && ctx.view && ctx.model) {
-				const focused = focusFirstMatch(ctx.model, {
-					...ctx.view,
-					query: module.query
-				}, module.query);
-				ctx.matchIndex = focused.index;
-				setView(focused.view);
-				startDepthScan();
-			}
-		});
-		viewport.addEventListener("pointercancel", () => {
-			drag = null;
-		});
-		viewport.addEventListener("dblclick", () => {
-			if (!ctx.view) return;
-			ctx.browserOpen = false;
-			setView(expandModule(ctx.view, module));
-			startDepthScan();
-		});
-		const deck = el("div", "module-deck");
-		const posKnob = createKnob({
-			label: "WT POS",
-			value: osc.pos ?? .35,
-			size: 36,
-			accent: ctx.palette.open,
-			title: "Wavetable Z-position (drag to scrub · double-click for AUTO sweep)",
-			format: (v) => osc.pos === null ? `${Math.round(v * 100)}%` : `${Math.round(v * 100)}%`,
-			onChange(v) {
-				osc.pos = v;
-				posBadge.textContent = String(Math.round(v * 100));
-				drawModuleSurface(canvas, module, index, { mode: "rack" });
-			},
-			onReset() {
-				osc.pos = null;
-				posBadge.textContent = "AUTO";
-				drawModuleSurface(canvas, module, index, { mode: "rack" });
-			}
-		});
-		const depthKnob = createKnob({
-			label: "DEPTH",
-			value: osc.depth,
-			defaultValue: .65,
-			size: 36,
-			accent: color,
-			title: "3D tilt & depth spread (double-click to reset)",
-			onChange(v) {
-				osc.depth = v;
-				drawModuleSurface(canvas, module, index, { mode: "rack" });
-			}
-		});
-		const smoothKnob = createKnob({
-			label: "SMOOTH",
-			value: osc.smooth,
-			defaultValue: .52,
-			size: 36,
-			accent: color,
-			title: "Harmonic wavetable smoothness (double-click to reset)",
-			onChange(v) {
-				osc.smooth = v;
-				drawModuleSurface(canvas, module, index, { mode: "rack" });
-			}
-		});
-		deck.appendChild(posKnob.el);
-		deck.appendChild(depthKnob.el);
-		deck.appendChild(smoothKnob.el);
-		const foot = el("footer", "module-foot");
-		foot.appendChild(el("code", "module-query", module.query || "all commits"));
-		const expandBtn = document.createElement("button");
-		expandBtn.type = "button";
-		expandBtn.className = "op op-xs";
-		expandBtn.textContent = "stage";
-		expandBtn.title = "Open full 3D + 2D Stage for this oscillator";
-		expandBtn.addEventListener("click", () => {
-			if (!ctx.view) return;
-			ctx.browserOpen = false;
-			setView(expandModule(ctx.view, module));
-			startDepthScan();
-		});
-		foot.appendChild(expandBtn);
-		card.appendChild(topbar);
-		card.appendChild(sourceRow);
-		card.appendChild(viewport);
-		card.appendChild(deck);
-		card.appendChild(foot);
-		rack.appendChild(card);
-		rackCards.push({
-			canvas,
-			module,
-			index,
-			posKnob,
-			posBadge
-		});
-		drawModuleSurface(canvas, module, index, {
-			mode: "rack",
-			onPosUpdate(livePos) {
-				if (osc.pos === null) {
-					posKnob.setValue(livePos, `${Math.round(livePos * 100)}%`);
-					posBadge.textContent = String(Math.round(livePos * 100));
-				}
-			}
-		});
-	});
-	if (ctx.view.modules.length < 8) {
-		const add = document.createElement("button");
-		add.type = "button";
-		add.className = "module-add";
-		add.title = "Pin the current find as a new oscillator";
-		add.appendChild(el("span", "module-add-plus", "+"));
-		add.appendChild(el("span", "module-add-label", "add osc"));
-		add.addEventListener("click", pinCurrent);
-		rack.appendChild(add);
-	}
-}
-function pinCurrent() {
-	if (!ctx.view) return;
-	const query = ctx.view.query;
-	const name = query || "All commits";
-	const used = new Set(ctx.view.modules.map((module) => module.colorKey));
-	const colorKey = [
-		0,
-		1,
-		2,
-		3,
-		4,
-		5
-	].find((key) => !used.has(key)) ?? ctx.view.modules.length % 6;
-	const next = pinModule(ctx.view, {
-		name,
-		query,
-		colorKey
-	});
-	if (next === ctx.view) {
-		announce(ctx.view.modules.length >= 8 ? "the rack holds eight oscillators" : "that filter is already pinned");
-		return;
-	}
-	setView(next);
-	announce(`pinned “${name}”`);
-}
-// src/render/strip.js
-/**
-* strip.js — the commit strip under the wave.
-*
-* One button per slot, aligned to the same geometry the canvas uses. The
-* 16-tick meter is the slot's level (0–15); the label is the date and the
-* commit count (or the short sha when a slot holds one commit).
-*/
-function redraw() {
-	if (ctx.view?.depth) {
-		if (!ctx.view.rack) drawDepth();
-	} else drawWave();
-}
-function bandWidth() {
-	const canvas = document.getElementById("wave");
-	const width = canvas ? canvas.getBoundingClientRect().width : 0;
-	if (width > 0) return width;
-	const stage = document.getElementById("stage");
-	const stageW = stage ? stage.getBoundingClientRect().width : 0;
-	if (stageW > 0) return stageW;
-	const host = document.getElementById("slots");
-	return (host ? host.getBoundingClientRect().width : 960) + 80;
-}
-function renderStrip() {
-	const host = document.getElementById("slots");
-	if (!host || !ctx.window || !ctx.view) return;
-	const active = ctx.slots;
-	if (active.length !== 32) return;
-	const geom = slotGeometry(bandWidth(), 32);
-	host.style.setProperty("--slot-gap", `${geom.gap.toFixed(2)}px`);
-	host.style.gridTemplateColumns = `repeat(32, minmax(0, 1fr))`;
-	host.style.setProperty("--metric", ctx.view.depth && ctx.metric ? ctx.metric.color : "");
-	const focusK = ctx.focusCommit ? Math.max(0, Math.min(31, Math.floor((Date.parse(ctx.focusCommit.time) - ctx.window.startMs) / (ctx.window.slotMs || 1)))) : -1;
-	clear(host);
-	const fragment = document.createDocumentFragment();
-	for (let k = 0; k < 32; k++) {
-		const slot = active[k];
-		const cell = document.createElement("button");
-		cell.type = "button";
-		cell.className = "slot";
-		cell.dataset.k = String(k);
-		cell.dataset.x = slotX(k, geom).toFixed(3);
-		if (slot.count === 0) cell.disabled = true;
-		if (slot.agentCount > 0) cell.classList.add("is-agent");
-		if (ctx.view.lens.agents && slot.agentCount > 0) cell.classList.add("is-agent-lens");
-		if (k === focusK) cell.classList.add("is-focus");
-		const label = `slot ${k + 1} of 32, ${dateMedium(slot.startMs)}, ${slot.count} commit${slot.count === 1 ? "" : "s"}, churn ${slot.churn}, level ${slot.level}` + (slot.agentCount ? `, ${slot.agentCount} agent commit${slot.agentCount === 1 ? "" : "s"}` : "");
-		cell.setAttribute("aria-label", label);
-		cell.title = label;
-		cell.appendChild(el("span", "slot-date", dateShort(slot.startMs)));
-		const meter = el("span", "slot-meter");
-		meter.setAttribute("aria-hidden", "true");
-		const norm = slot.level / 15;
-		meter.style.setProperty("--lvl", norm.toFixed(3));
-		for (let i = 0; i < 8; i++) {
-			const tick = document.createElement("i");
-			const waveShape = Math.sin((i + .5) / 8 * Math.PI);
-			const hPct = slot.count === 0 ? 6 : Math.max(14, Math.round((.25 + .75 * norm * waveShape) * 100));
-			tick.style.height = `${hPct}%`;
-			if (slot.count > 0) tick.className = "on";
-			meter.appendChild(tick);
-		}
-		cell.appendChild(meter);
-		const count = slot.count === 1 && slot.newest ? shortSha(slot.newest.sha, 6) : String(slot.count);
-		cell.appendChild(el("span", "slot-count", slot.count === 0 ? "·" : count));
-		fragment.appendChild(cell);
-	}
-	host.appendChild(fragment);
-	const mode = document.getElementById("stripMode");
-	if (mode) mode.textContent = ctx.view.depth ? `OVERVIEW · 32 SLICES · ${ctx.metric?.label ?? "all"} · DRAG TO SELECT` : `OVERVIEW · 32 SLOTS · ${ctx.view.span} · DRAG TO SELECT`;
-	const range = document.getElementById("stripRange");
-	if (range) range.textContent = `${dateMedium(ctx.window.startMs)} – ${dateMedium(ctx.window.endMs)} UTC`;
-}
-function initStrip() {
-	const host = document.getElementById("slots");
-	if (!host) return;
-	let scrubbing = false;
-	const pickAtPointer = (event) => {
-		const elUnder = document.elementFromPoint(event.clientX, event.clientY);
-		const cell = elUnder instanceof Element ? elUnder.closest(".slot") : null;
-		if (!(cell instanceof HTMLElement) || cell.disabled || !ctx.view) return;
-		const slot = ctx.slots[Number(cell.dataset.k)];
-		if (!slot || !slot.newest) return;
-		if (ctx.view.focusSha !== slot.newest.sha) setView(focusSlot(ctx.view, slot));
-	};
-	host.addEventListener("pointerdown", (event) => {
-		if (event.button !== 0) return;
-		scrubbing = true;
-		pickAtPointer(event);
-	});
-	window.addEventListener("pointerup", () => {
-		scrubbing = false;
-	});
-	host.addEventListener("click", (event) => {
-		const target = event.target;
-		const cell = target instanceof Element ? target.closest(".slot") : null;
-		if (!(cell instanceof HTMLElement) || cell.disabled || !ctx.view) return;
-		const slot = ctx.slots[Number(cell.dataset.k)];
-		if (!slot) return;
-		setView(focusSlot(ctx.view, slot));
-	});
-	host.addEventListener("pointermove", (event) => {
-		if (scrubbing) pickAtPointer(event);
-		const target = event.target;
-		const cell = target instanceof Element ? target.closest(".slot") : null;
-		const k = cell instanceof HTMLElement ? Number(cell.dataset.k) : -1;
-		if (k === ctx.hoverSlot) return;
-		ctx.hoverSlot = k;
-		redraw();
-	});
-	host.addEventListener("pointerleave", () => {
-		if (ctx.hoverSlot === -1) return;
-		ctx.hoverSlot = -1;
-		redraw();
-	});
-}
-function initCanvasPointer() {
-	const canvas = document.getElementById("wave");
-	if (!canvas) return;
-	const slotFromEvent = (event) => {
-		const rect = canvas.getBoundingClientRect();
-		const geom = slotGeometry(rect.width, 32);
-		const x = event.clientX - rect.left;
-		return {
-			k: slotAtX(x, geom),
-			x
-		};
-	};
-	canvas.addEventListener("pointermove", (event) => {
-		const { k } = slotFromEvent(event);
-		if (k === ctx.hoverSlot) return;
-		ctx.hoverSlot = k;
-		redraw();
-	});
-	canvas.addEventListener("pointerleave", () => {
-		if (ctx.hoverSlot === -1) return;
-		ctx.hoverSlot = -1;
-		redraw();
-	});
-	canvas.addEventListener("click", (event) => {
-		if (!ctx.view) return;
-		const { k } = slotFromEvent(event);
-		const slot = ctx.slots[k];
-		if (!slot) return;
-		setView(focusSlot(ctx.view, slot));
-	});
-}
-// src/render/tension.js
-/**
-* tension.js — the amber 2-D "tension vector" for open pull requests.
-*
-* X is age (0–20 days), Y is size relative to the largest open PR. The vector
-* points at the weighted centre of attention; the dots are the pull requests.
-* Activate to open the tray; drag to filter; wheel to widen the filter.
-*/
-var AGE_MAX = 1.2;
-var handlers = {
-	open: () => {},
-	focus: () => {}
-};
-var drag = null;
-var hoverPr = null;
-function fit(canvas) {
-	const rect = canvas.getBoundingClientRect();
-	const dpr = Math.min(window.devicePixelRatio || 1, 2);
-	const width = Math.max(1, Math.round(rect.width));
-	const height = Math.max(1, Math.round(rect.height));
-	if (canvas.width !== Math.round(width * dpr) || canvas.height !== Math.round(height * dpr)) {
-		canvas.width = Math.round(width * dpr);
-		canvas.height = Math.round(height * dpr);
-	}
-	const g = canvas.getContext("2d");
-	g.setTransform(dpr, 0, 0, dpr, 0, 0);
-	return {
-		g,
-		width,
-		height
-	};
-}
-function plot(width, height) {
-	return {
-		left: 11,
-		right: width - 7,
-		top: 8,
-		bottom: height - 13
-	};
-}
-function prPoint(pr, box) {
-	return {
-		x: box.left + agePlot(pr.ageDays) / AGE_MAX * (box.right - box.left),
-		y: box.bottom - pr.amountNorm * (box.bottom - box.top)
-	};
-}
-function drawTension() {
-	const canvas = document.getElementById("tensionPad");
-	const wrap = document.getElementById("tension");
-	if (!canvas || !wrap || !ctx.palette || !ctx.prs) return;
-	const { g, width, height } = fit(canvas);
-	const P = ctx.palette;
-	const box = plot(width, height);
-	const prs = ctx.prs;
-	const lensAge = ctx.view?.lens.age ?? true;
-	const theme = ctx.view?.theme ?? "signal";
-	g.clearRect(0, 0, width, height);
-	g.strokeStyle = rgba(P.dimmer, .7);
-	g.lineWidth = 1;
-	g.beginPath();
-	g.moveTo(box.left, box.top);
-	g.lineTo(box.left, box.bottom);
-	g.lineTo(box.right, box.bottom);
-	g.stroke();
-	g.strokeStyle = rgba(P.line, .9);
-	g.beginPath();
-	g.moveTo(box.left, (box.top + box.bottom) / 2);
-	g.lineTo(box.right, (box.top + box.bottom) / 2);
-	g.moveTo((box.left + box.right) / 2, box.top);
-	g.lineTo((box.left + box.right) / 2, box.bottom);
-	g.stroke();
-	g.font = "8px ui-sans-serif, system-ui, sans-serif";
-	g.fillStyle = P.dimmer;
-	g.textAlign = "left";
-	g.textBaseline = "top";
-	g.fillText("amount", box.left, box.top - 7);
-	g.textAlign = "right";
-	g.textBaseline = "bottom";
-	g.fillText("age →", box.right, height - 1);
-	const empty = prs.length === 0;
-	if (empty) {
-		g.fillStyle = P.dimmer;
-		g.textAlign = "center";
-		g.textBaseline = "middle";
-		g.font = "8.5px ui-sans-serif, system-ui, sans-serif";
-		g.fillText("no open PRs", (box.left + box.right) / 2, (box.top + box.bottom) / 2);
-	}
-	if (ctx.prFilter) {
-		const fx = box.left + ctx.prFilter.x / AGE_MAX * (box.right - box.left);
-		const fy = box.bottom - ctx.prFilter.y * (box.bottom - box.top);
-		const radius = ctx.prFilter.r * Math.min(box.right - box.left, box.bottom - box.top);
-		g.strokeStyle = rgba(P.open, .45);
-		g.setLineDash([2, 3]);
-		g.beginPath();
-		g.arc(fx, fy, radius, 0, Math.PI * 2);
-		g.stroke();
-		g.setLineDash([]);
-	}
-	const centroid = prCentroid(prs);
-	if (centroid) {
-		const px = box.left + centroid.x / AGE_MAX * (box.right - box.left);
-		const py = box.bottom - centroid.y * (box.bottom - box.top);
-		const color = lensAge ? mixHex(P.open, P.risk, clamp(centroid.x / AGE_MAX, 0, 1)) : P.open;
-		g.strokeStyle = color;
-		g.lineWidth = 1.6;
-		g.beginPath();
-		g.moveTo(box.left + 1, box.bottom - 1);
-		g.lineTo(px, py);
-		g.stroke();
-		const angle = Math.atan2(py - (box.bottom - 1), px - (box.left + 1));
-		g.fillStyle = color;
-		g.beginPath();
-		g.moveTo(px, py);
-		g.lineTo(px - 5.5 * Math.cos(angle - .4), py - 5.5 * Math.sin(angle - .4));
-		g.lineTo(px - 5.5 * Math.cos(angle + .4), py - 5.5 * Math.sin(angle + .4));
-		g.closePath();
-		g.fill();
-	}
-	for (const pr of prs) {
-		const { x, y } = prPoint(pr, box);
-		const nx = agePlot(pr.ageDays) / AGE_MAX;
-		const ny = pr.amountNorm;
-		const inFilter = !ctx.prFilter || Math.hypot(nx - ctx.prFilter.x / AGE_MAX, ny - ctx.prFilter.y) <= ctx.prFilter.r;
-		const color = lensAge ? ageColor(theme, pr.ageNorm) : P.open;
-		const radius = 3 + pr.amountNorm * 1.8;
-		g.save();
-		g.globalAlpha = inFilter ? 1 : .22;
-		if (pr.pr.draft) {
-			g.strokeStyle = color;
-			g.lineWidth = 1.4;
-			g.beginPath();
-			g.arc(x, y, radius, 0, Math.PI * 2);
-			g.stroke();
-		} else {
-			g.fillStyle = color;
-			g.beginPath();
-			g.arc(x, y, radius, 0, Math.PI * 2);
-			g.fill();
-		}
-		if (pr.pr.conflicts) {
-			g.strokeStyle = color;
-			g.lineWidth = 1;
-			g.setLineDash([1.5, 1.5]);
-			g.beginPath();
-			g.arc(x, y, radius + 2.6, 0, Math.PI * 2);
-			g.stroke();
-			g.setLineDash([]);
-		}
-		if (pr.agentAuthored) {
-			g.fillStyle = P.agent;
-			g.beginPath();
-			g.arc(x, y, 1.2, 0, Math.PI * 2);
-			g.fill();
-		}
-		if (hoverPr === pr) {
-			g.strokeStyle = P.handle;
-			g.lineWidth = 1.2;
-			g.beginPath();
-			g.arc(x, y, radius + 3.5, 0, Math.PI * 2);
-			g.stroke();
-		}
-		g.restore();
-	}
-	wrap.dataset.empty = empty ? "true" : "false";
-	const count = document.getElementById("tensionCount");
-	if (count) count.textContent = String(prs.length);
-	const stale = prs.filter((pr) => pr.stale).length;
-	wrap.setAttribute("aria-label", prs.length ? `Pull request tension: ${prs.length} open, ${stale} stale. Activate to list them.` : "Pull request tension: no open pull requests.");
-	wrap.title = prs.length ? `${prs.length} open · ${stale} stale · click for the list` : "no open pull requests";
-}
-/** Geometry of the pad, used by pointer hit-testing. */
-function pointerPr(event) {
-	const canvas = document.getElementById("tensionPad");
-	if (!canvas) return {
-		pr: null,
-		point: null
-	};
-	const rect = canvas.getBoundingClientRect();
-	const box = plot(rect.width, rect.height);
-	const x = event.clientX - rect.left;
-	const y = event.clientY - rect.top;
-	let nearest = null;
-	let best = 13;
-	for (const pr of ctx.prs) {
-		const point = prPoint(pr, box);
-		const distance = Math.hypot(point.x - x, point.y - y);
-		if (distance < best) {
-			best = distance;
-			nearest = pr;
-		}
-	}
-	const rx = clamp((x - box.left) / Math.max(1, box.right - box.left), 0, 1);
-	const ry = clamp((box.bottom - y) / Math.max(1, box.bottom - box.top), 0, 1);
-	return {
-		pr: nearest,
-		point: {
-			x: rx * AGE_MAX,
-			y: ry,
-			px: x,
-			py: y,
-			rx,
-			ry
-		},
-		box
-	};
-}
-function initTension(nextHandlers) {
-	handlers = {
-		...handlers,
-		...nextHandlers
-	};
-	const wrap = document.getElementById("tension");
-	if (!wrap) return;
-	wrap.addEventListener("pointerdown", (event) => {
-		if (event.button !== 0) return;
-		drag = {
-			x: event.clientX,
-			y: event.clientY,
-			moved: false
-		};
-		try {
-			wrap.setPointerCapture(event.pointerId);
-		} catch {}
-	});
-	wrap.addEventListener("pointermove", (event) => {
-		const { pr } = pointerPr(event);
-		hoverPr = pr;
-		if (drag) {
-			if (Math.hypot(event.clientX - drag.x, event.clientY - drag.y) > 5) drag.moved = true;
-			const { point } = pointerPr(event);
-			if (point) ctx.prFilter = {
-				x: point.x,
-				y: point.y,
-				r: ctx.prFilter?.r ?? .4
-			};
-			drawTension();
-		} else drawTension();
-	});
-	wrap.addEventListener("pointerup", (event) => {
-		const wasDrag = drag?.moved;
-		drag = null;
-		if (wasDrag) {
-			drawTension();
-			return;
-		}
-		const { pr } = pointerPr(event);
-		if (pr) handlers.focus(pr);
-		else handlers.open();
-		drawTension();
-	});
-	wrap.addEventListener("pointercancel", () => {
-		drag = null;
-		drawTension();
-	});
-	wrap.addEventListener("wheel", (event) => {
-		event.preventDefault();
-		const current = ctx.prFilter;
-		ctx.prFilter = current ? {
-			...current,
-			r: clamp(current.r + (event.deltaY > 0 ? .06 : -.06), .15, .95)
-		} : {
-			x: AGE_MAX / 2,
-			y: .5,
-			r: .4
-		};
-		drawTension();
-	}, { passive: false });
-	wrap.addEventListener("keydown", (event) => {
-		if (event.key === "Enter" || event.key === " ") {
-			event.preventDefault();
-			handlers.open();
-		}
-		if (event.key === "Escape") {
-			event.preventDefault();
-			ctx.prFilter = null;
-			drawTension();
-		}
-	});
-	wrap.addEventListener("pointerleave", () => {
-		if (drag) return;
-		if (hoverPr) {
-			hoverPr = null;
-			drawTension();
-		}
-	});
-}
-// src/render/readout.js
-/**
-* readout.js — the header readout, the focus card and the tension summary.
-*
-* Every commit string is written with textContent: subjects are untrusted.
-*/
-function stat(text, className) {
-	return el("span", className || "", text);
-}
-function reviewLabel(value) {
-	return {
-		none: "no review",
-		required: "review required",
-		approved: "approved",
-		changes_requested: "changes requested"
-	}[value] || value;
-}
-function checksLabel(value) {
-	return {
-		none: "no checks",
-		pending: "checks pending",
-		passing: "checks passing",
-		failing: "checks failing"
-	}[value] || value;
-}
-function renderReadout() {
-	if (!ctx.doc || !ctx.view || !ctx.window) return;
-	const repoOut = document.getElementById("repoOut");
-	if (repoOut) repoOut.textContent = `${ctx.doc.repo.name} · ${ctx.doc.refs.length} refs · ${ctx.doc.commits.length} commits`;
-	const focusOut = document.getElementById("focusOut");
-	if (focusOut) focusOut.textContent = ctx.focusRef ? `${ctx.focusRef.name}${ctx.view.focusSha ? ` · ${shortSha(ctx.view.focusSha)}` : ""}` : "no ref focused";
-	const windowOut = document.getElementById("windowOut");
-	if (windowOut) {
-		if (ctx.view.depth) {
-			const span = ctx.window.endMs - ctx.window.startMs;
-			const pct = ctx.model ? Math.round((ctx.window.endMs - ctx.model.startMs) / Math.max(1, ctx.model.snapshotMs - ctx.model.startMs) * 100) : 100;
-			windowOut.textContent = ctx.view.rack ? `rack · POS ${pct}% · ${ctx.view.modules.length} filters` : `3D · POS ${pct}% · ${ctx.view.span}`;
-			windowOut.title = `${dateShort(ctx.window.startMs)} – ${dateShort(ctx.window.endMs)} (${Math.round(span / 864e5)} days)`;
-		} else {
-			windowOut.textContent = `${ctx.view.span} · ${dateShort(ctx.window.startMs)} – ${dateShort(ctx.window.endMs)}`;
-			windowOut.title = "";
-		}
-	}
-	renderCommitCard();
-	renderTensionSummary();
-	const wave = document.getElementById("wave");
-	if (wave) {
-		const stale = ctx.prs.filter((pr) => pr.stale).length;
-		const mode = ctx.view.depth ? "3D depth field" : "2D history";
-		const search = ctx.search.query ? ` Search “${ctx.search.query}”: ${ctx.search.count} matches.` : "";
-		wave.setAttribute("aria-label", `${mode}: ${ctx.view.span} ending ${dateShort(ctx.window.endMs)}, ${ctx.waves.length} visible refs, ${ctx.prs.length} open pull requests, ${stale} stale. Metric ${ctx.metric ? ctx.metric.label : "all"}. Focus ${ctx.focusRef ? ctx.focusRef.name : "none"}.${search}`);
-	}
-}
-function renderCommitCard() {
-	const sha = document.getElementById("commitSha");
-	const author = document.getElementById("commitAuthor");
-	const subject = document.getElementById("commitSubject");
-	const stats = document.getElementById("commitStats");
-	const copy = document.getElementById("copyCommit");
-	if (!sha || !author || !subject || !stats || !copy) return;
-	const commit = ctx.focusCommit;
-	stats.replaceChildren();
-	author.replaceChildren();
-	if (!commit) {
-		sha.textContent = "—";
-		subject.textContent = "no commit focused";
-		copy.disabled = true;
-		copy.dataset.command = "";
-		return;
-	}
-	sha.textContent = shortSha(commit.sha, 7);
-	sha.title = commit.sha;
-	author.append(document.createTextNode(commit.author.name));
-	if (commit.author.kind === "agent") {
-		author.append(document.createTextNode(" "));
-		author.append(stat("◈ agent", "agent-mark"));
-		if (commit.agent) author.append(document.createTextNode(` ${commit.agent.model}`));
-	}
-	subject.textContent = commit.subject;
-	stats.appendChild(stat(`+${commit.insertions}`, "add"));
-	stats.appendChild(stat(`−${commit.deletions}`, "del"));
-	stats.appendChild(stat(`${commit.files} files`));
-	if (commit.merge) stats.appendChild(stat("merge", "warn"));
-	if (commit.parents.length !== 1) stats.appendChild(stat(`${commit.parents.length} parents`));
-	const refId = commit.refs[0];
-	const ref = refId ? ctx.model?.refsById.get(refId) : null;
-	if (ref) {
-		stats.appendChild(stat(`ref ${ref.name}`));
-		const pr = ref.pr;
-		if (pr && commit.sha === ref.tip) {
-			stats.appendChild(stat(`PR #${pr.number} ${pr.state}`));
-			stats.appendChild(stat(reviewLabel(pr.review)));
-			stats.appendChild(stat(checksLabel(pr.checks), pr.checks === "failing" ? "warn" : ""));
-			if (pr.conflicts) stats.appendChild(stat("conflict", "warn"));
-		}
-	}
-	stats.appendChild(stat(timeFull(Date.parse(commit.time))));
-	copy.disabled = false;
-	copy.dataset.command = `git show ${commit.sha} --stat`;
-}
-function renderTensionSummary() {
-	const host = document.getElementById("tensionSummary");
-	if (!host) return;
-	host.replaceChildren();
-	if (!ctx.prs.length) {
-		host.textContent = "no open pull requests";
-		return;
-	}
-	const stale = ctx.prs.filter((pr) => pr.stale).length;
-	const max = ctx.prs.reduce((value, pr) => Math.max(value, pr.tension), 0);
-	host.appendChild(el("span", "", `tension ${max.toFixed(2)}`));
-	host.appendChild(el("span", "", `${ctx.prs.length} open`));
-	if (stale) host.appendChild(el("span", "risk", `${stale} stale`));
-}
-function initReadout() {
-	const copy = document.getElementById("copyCommit");
-	if (!copy) return;
-	copy.addEventListener("click", () => {
-		const command = copy.dataset.command;
-		if (!command) return;
-		copyText(command, "git command copied");
-	});
-}
-// src/ui/legend.js
-/**
-* legend.js — every ref, its colour, its PR state and its visibility eye.
-*/
-function renderLegend() {
-	const host = document.getElementById("legend");
-	if (!host || !ctx.model || !ctx.view) return;
-	clear(host);
-	for (const ref of ctx.model.doc.refs) {
-		const visible = ctx.view.refs.includes(ref.id);
-		const item = el("div", "legend-item");
-		if (!visible) item.classList.add("is-hidden");
-		if (ctx.view.lens.agents && !refHasAgent(ctx.model, ref.id)) item.classList.add("is-dimmed");
-		const focus = document.createElement("button");
-		focus.type = "button";
-		focus.className = "legend-focus";
-		focus.setAttribute("aria-pressed", ctx.view.focusRef === ref.id ? "true" : "false");
-		focus.title = `${ref.name} · ${ref.kind}` + (ref.pr ? ` · PR #${ref.pr.number} ${ref.pr.state}` : " · no pull request");
-		const swatch = el("span", "legend-swatch");
-		swatch.style.setProperty("--sw", identityOf(ref));
-		focus.appendChild(swatch);
-		focus.appendChild(el("span", "legend-name", ref.name));
-		if (ref.pr && (ref.pr.state === "open" || ref.pr.state === "draft")) focus.appendChild(el("span", "legend-pr", "●"));
-		focus.addEventListener("click", () => {
-			setView(focusRefView(ctx.model, showRef(ctx.view, ref.id), ref));
-		});
-		const eye = document.createElement("button");
-		eye.type = "button";
-		eye.className = "legend-eye";
-		eye.setAttribute("aria-pressed", visible ? "true" : "false");
-		eye.setAttribute("aria-label", `${visible ? "Hide" : "Show"} ${ref.name}`);
-		eye.title = `${visible ? "Hide" : "Show"} ${ref.name}`;
-		eye.textContent = visible ? "◉" : "○";
-		eye.addEventListener("click", () => {
-			setView(toggleRef(ctx.view, ref.id));
-		});
-		item.appendChild(focus);
-		item.appendChild(eye);
-		host.appendChild(item);
-	}
+	return [...groups.values()].sort((a, b) => b.count - a.count || a.name.localeCompare(b.name)).slice(0, limit).map((group, index) => ({
+		...group,
+		colorKey: by === "ref" ? group.colorKey : COLOR_ORDER[index % COLOR_ORDER.length]
+	}));
 }
 // src/ui/tray.js
 /**
@@ -7962,115 +7505,6 @@ function initTray() {
 	const close = document.getElementById("trayClose");
 	if (close) close.addEventListener("click", closeTray);
 }
-// src/ui/help.js
-/**
-* help.js — the keyboard map and the model in one panel.
-*/
-var open = false;
-function panel() {
-	return document.getElementById("helpPanel");
-}
-function setTab(tab) {
-	const keys = document.getElementById("helpTabKeys");
-	const about = document.getElementById("helpTabAbout");
-	const keysPanel = document.getElementById("helpKeys");
-	const aboutPanel = document.getElementById("helpAbout");
-	if (!keys || !about || !keysPanel || !aboutPanel) return;
-	const showKeys = tab === "keys";
-	keys.setAttribute("aria-selected", showKeys ? "true" : "false");
-	about.setAttribute("aria-selected", showKeys ? "false" : "true");
-	keys.tabIndex = showKeys ? 0 : -1;
-	about.tabIndex = showKeys ? -1 : 0;
-	keysPanel.hidden = !showKeys;
-	aboutPanel.hidden = showKeys;
-}
-function openHelp(tab = "keys") {
-	const node = panel();
-	if (!node) return;
-	open = true;
-	node.hidden = false;
-	setTab(tab);
-	const button = document.getElementById("helpBtn");
-	if (button) button.setAttribute("aria-expanded", "true");
-	const selected = node.querySelector("[role=\"tab\"][aria-selected=\"true\"]");
-	if (selected instanceof HTMLElement) selected.focus({ preventScroll: true });
-}
-function closeHelp() {
-	const node = panel();
-	if (!node || !open) return;
-	open = false;
-	node.hidden = true;
-	const button = document.getElementById("helpBtn");
-	if (button) {
-		button.setAttribute("aria-expanded", "false");
-		button.focus({ preventScroll: true });
-	}
-}
-function toggleHelp() {
-	if (open) closeHelp();
-	else openHelp();
-}
-function initHelp() {
-	const button = document.getElementById("helpBtn");
-	const close = document.getElementById("helpClose");
-	const keys = document.getElementById("helpTabKeys");
-	const about = document.getElementById("helpTabAbout");
-	const tabs = [keys, about].filter((node) => node instanceof HTMLElement);
-	if (button) button.addEventListener("click", () => toggleHelp());
-	if (close) close.addEventListener("click", closeHelp);
-	if (keys) keys.addEventListener("click", () => setTab("keys"));
-	if (about) about.addEventListener("click", () => setTab("about"));
-	for (const tab of tabs) tab.addEventListener("keydown", (event) => {
-		if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
-		event.preventDefault();
-		const next = event.key === "ArrowRight" ? "about" : "keys";
-		setTab(next);
-		const target = document.getElementById(next === "about" ? "helpTabAbout" : "helpTabKeys");
-		if (target) target.focus();
-	});
-}
-// src/core/split.ts
-var COLOR_ORDER = [
-	1,
-	2,
-	3,
-	4,
-	5,
-	0
-];
-function splitModules(model, query, by, limit = 4) {
-	const search = searchCommits(model, query);
-	const commits = search.query ? search.matches : model.doc.commits;
-	const groups = /* @__PURE__ */ new Map();
-	for (const commit of commits) if (by === "author") {
-		const name = commit.author.name;
-		const key = `author:${name.split(/\s+/)[0].toLowerCase()}`;
-		const existing = groups.get(key);
-		if (existing) existing.count += 1;
-		else groups.set(key, {
-			name,
-			query: key,
-			count: 1,
-			colorKey: 0
-		});
-	} else for (const refId of commit.refs) {
-		const ref = model.refsById.get(refId);
-		if (!ref) continue;
-		const key = `ref:${ref.id}`;
-		const existing = groups.get(key);
-		if (existing) existing.count += 1;
-		else groups.set(key, {
-			name: ref.id,
-			query: key,
-			count: 1,
-			colorKey: ref.colorKey
-		});
-	}
-	return [...groups.values()].sort((a, b) => b.count - a.count || a.name.localeCompare(b.name)).slice(0, limit).map((group, index) => ({
-		...group,
-		colorKey: by === "ref" ? group.colorKey : COLOR_ORDER[index % COLOR_ORDER.length]
-	}));
-}
 // src/ui/controls.js
 /**
 * controls.js — the header dial, the bottom controls, the source menu and the
@@ -8123,8 +7557,15 @@ function setUiMode(mode) {
 	}
 }
 function syncStageKnobsLive() {
-	if (!stageKnobRefs || !ctx.palette) return;
-	if (ctx.stageParams.pos === null) stageKnobRefs.pos.setValue(ctx.activeSliceZ, `${Math.round(ctx.activeSliceZ * 100)}%`);
+	if (!stageKnobRefs || !ctx.palette || !ctx.view || !ctx.model) return;
+	const pos = liveWtPos();
+	const pct = Math.round(pos * 100);
+	stageKnobRefs.pos.setValue(pos, pct >= 100 ? "NOW" : `${pct}%`);
+	if (stageKnobRefs.scanBtn) {
+		const playing = ctx.view.motion.playing;
+		stageKnobRefs.scanBtn.setAttribute("aria-pressed", playing ? "true" : "false");
+		stageKnobRefs.scanBtn.textContent = playing ? "⏸ LFO" : "▶ LFO";
+	}
 }
 function initStageKnobs() {
 	const host = document.getElementById("stageKnobs");
@@ -8132,19 +7573,37 @@ function initStageKnobs() {
 	clear(host);
 	const P = ctx.palette;
 	const sp = ctx.stageParams;
+	const scanBtn = document.createElement("button");
+	scanBtn.type = "button";
+	scanBtn.className = "op op-xs op-play stage-scan-btn";
+	scanBtn.textContent = "▶ LFO";
+	scanBtn.setAttribute("aria-pressed", "false");
+	scanBtn.title = "Play/pause LFO time-travel scan across Git history (Space)";
+	scanBtn.addEventListener("click", () => togglePlay());
 	const pos = createKnob({
 		label: "WT POS",
-		value: sp.pos ?? .35,
+		value: liveWtPos(),
+		defaultValue: 1,
 		size: 40,
 		accent: P.open,
-		title: "Wavetable playhead position (drag to scrub · double-click for AUTO sweep)",
+		title: "Time-travel read head through Git history (0% oldest → 100% now · double-click for NOW)",
+		format: (v) => Math.round(v * 100) >= 100 ? "NOW" : `${Math.round(v * 100)}%`,
 		onChange(v) {
-			sp.pos = v;
-			drawDepth();
+			if (!ctx.model || !ctx.view) return;
+			if (ctx.view.span === "all") {
+				const next = setSpan(ctx.model, ctx.view, "90d");
+				setView(viewAtWtPos(ctx.model, next, v, ctx.search.shas, true));
+			} else setView(viewAtWtPos(ctx.model, ctx.view, v, ctx.search.shas, true));
 		},
 		onReset() {
-			sp.pos = null;
-			drawDepth();
+			if (!ctx.model || !ctx.view) return;
+			setView({
+				...nowView(ctx.model, ctx.view),
+				motion: {
+					...ctx.view.motion,
+					playing: false
+				}
+			});
 		}
 	});
 	const depth = createKnob({
@@ -8171,10 +7630,12 @@ function initStageKnobs() {
 			drawDepth();
 		}
 	});
+	host.appendChild(scanBtn);
 	host.appendChild(pos.el);
 	host.appendChild(depth.el);
 	host.appendChild(smooth.el);
 	stageKnobRefs = {
+		scanBtn,
 		pos,
 		depth,
 		smooth
@@ -8590,6 +8051,1183 @@ function syncControls() {
 		for (const option of menu.querySelectorAll(".theme-option")) if (option instanceof HTMLElement) option.setAttribute("aria-checked", option.dataset.theme === ctx.view.theme ? "true" : "false");
 	}
 }
+// src/render/rack.js
+/**
+* rack.js — Serum / Vital-inspired 3D wavetable oscillator rack with synced
+* time-travel scrubbing and live cross-oscillator comparison diffs.
+*
+* Each oscillator bay is one live Git filter rendered as a full-history 3D
+* volumetric wavetable. In SYNC mode (default), scrubbing WT POS on any
+* oscillator or the master rack bar scrubs every oscillator AND the repo read
+* head (`view.end`) together, displaying live commit/churn counts and signed
+* deltas at that exact timestamp.
+*/
+var LETTERS = [
+	"A",
+	"B",
+	"C",
+	"D",
+	"E",
+	"F",
+	"G",
+	"H"
+];
+var rackCards = [];
+var lastSignature = "";
+function label(index) {
+	return `OSC ${LETTERS[index] ?? index + 1}`;
+}
+function rackSignature() {
+	if (!ctx.view) return "";
+	return (ctx.doc?.repo.id ?? "") + "|" + ctx.view.theme + "|" + ctx.view.modules.map((m) => `${m.name}\t${m.query}\t${m.colorKey}`).join("\n");
+}
+function scrubGlobalWtPos(pos) {
+	if (!ctx.model || !ctx.view) return;
+	const base = ctx.view.span === "all" ? setSpan(ctx.model, ctx.view, "90d") : ctx.view;
+	setView(viewAtWtPos(ctx.model, base, pos, ctx.search.shas, true));
+}
+function resetGlobalWtPos() {
+	if (!ctx.model || !ctx.view) return;
+	setView({
+		...nowView(ctx.model, ctx.view),
+		motion: {
+			...ctx.view.motion,
+			playing: false
+		}
+	});
+}
+function cardWtPos(card) {
+	const osc = getOscParams(card.module.query);
+	if (ctx.rackSync) return liveWtPos();
+	return osc.pos !== null ? osc.pos : liveWtPos();
+}
+function computeWindowMetrics(query, endMs) {
+	if (!ctx.model || !ctx.view) return {
+		commits: 0,
+		churn: 0,
+		agent: 0,
+		endMs
+	};
+	const search = searchCommits(ctx.model, query);
+	const win = windowFor(ctx.model, isoOf(endMs), ctx.view.span);
+	const slots = buildSlots(ctx.model, win, search.shas);
+	let commits = 0;
+	let churn = 0;
+	let agent = 0;
+	for (const s of slots) {
+		commits += s.count;
+		churn += s.churn;
+		agent += s.agentCount;
+	}
+	return {
+		commits,
+		churn,
+		agent,
+		endMs: win.endMs
+	};
+}
+function signedDelta(n) {
+	if (n > 0) return `+${n}`;
+	if (n < 0) return `−${Math.abs(n)}`;
+	return "0";
+}
+function signedChurn(n) {
+	if (n > 0) return `+${formatChurn(n)}`;
+	if (n < 0) return `−${formatChurn(Math.abs(n))}`;
+	return "0";
+}
+/** Update live comparison bars, diff deltas, timestamps and master toolbar without rebuilding DOM. */
+function syncRackTelemetry() {
+	if (!ctx.model || !ctx.view || !rackCards.length) return;
+	const sharedPos = liveWtPos();
+	const sharedMs = liveReadHeadMs();
+	const sharedPct = Math.round(sharedPos * 100);
+	const stats = rackCards.map((card) => {
+		const pos = cardWtPos(card);
+		const ms = ctx.rackSync ? sharedMs : endMsAtWtPos(ctx.model, ctx.view.span, pos);
+		return {
+			card,
+			pos,
+			...computeWindowMetrics(card.module.query, ms)
+		};
+	});
+	const maxChurn = Math.max(1, ...stats.map((s) => s.churn));
+	const selectedIdx = stats.findIndex((s) => ctx.view.query === s.card.module.query);
+	const baseIdx = selectedIdx >= 0 ? selectedIdx : 0;
+	const base = stats[baseIdx];
+	for (let i = 0; i < stats.length; i++) {
+		const item = stats[i];
+		const { card, pos } = item;
+		const isSelected = ctx.view.query === card.module.query;
+		const isBaseline = i === baseIdx && stats.length > 1;
+		const pct = Math.round(pos * 100);
+		card.el.classList.toggle("is-selected", isSelected);
+		card.nameBtn.setAttribute("aria-pressed", isSelected ? "true" : "false");
+		if (card.posKnob) card.posKnob.setValue(pos, pct >= 100 ? "NOW" : `${pct}%`);
+		if (card.posBadge) card.posBadge.textContent = `${pct}% · ${dateShort(item.endMs)}`;
+		if (card.sliceStats) card.sliceStats.textContent = `${item.commits}c · ${formatChurn(item.churn)}`;
+		if (card.meterFill) {
+			const wPct = item.churn > 0 ? Math.max(6, Math.round(item.churn / maxChurn * 100)) : 0;
+			card.meterFill.style.width = `${wPct}%`;
+		}
+		if (card.diffBadge) {
+			card.diffBadge.classList.remove("is-pos", "is-neg", "is-base");
+			if (stats.length <= 1) card.diffBadge.textContent = `${item.commits} in ${ctx.view.span}`;
+			else if (isBaseline) {
+				card.diffBadge.classList.add("is-base");
+				card.diffBadge.textContent = isSelected ? "BASE · solo" : "BASE";
+			} else {
+				const dc = item.commits - base.commits;
+				const dch = item.churn - base.churn;
+				if (dc > 0 || dc === 0 && dch > 0) card.diffBadge.classList.add("is-pos");
+				else if (dc < 0 || dc === 0 && dch < 0) card.diffBadge.classList.add("is-neg");
+				card.diffBadge.textContent = `Δ ${signedDelta(dc)}c · ${signedChurn(dch)}`;
+			}
+		}
+	}
+	const slider = document.getElementById("rackWtSlider");
+	if (slider instanceof HTMLInputElement) {
+		slider.value = String(Math.round(sharedPos * 1e3));
+		slider.disabled = ctx.view.span === "all";
+	}
+	const timeOut = document.getElementById("rackTimeOut");
+	if (timeOut) timeOut.textContent = `${dateFull(sharedMs)} UTC · ${sharedPct}%`;
+	const syncBtn = document.getElementById("rackSyncBtn");
+	if (syncBtn) {
+		syncBtn.setAttribute("aria-pressed", ctx.rackSync ? "true" : "false");
+		syncBtn.textContent = ctx.rackSync ? "sync: on" : "sync: free";
+	}
+	const lfoBtn = document.getElementById("rackLfoBtn");
+	if (lfoBtn) {
+		const playing = ctx.view.motion.playing;
+		lfoBtn.setAttribute("aria-pressed", playing ? "true" : "false");
+		lfoBtn.textContent = playing ? "⏸ scan" : "▶ scan";
+	}
+	const diffOut = document.getElementById("rackDiffOut");
+	if (diffOut) {
+		if (!ctx.rackSync) diffOut.textContent = "free mode · comparing independent timestamps";
+		else if (stats.length >= 2) {
+			const sorted = [...stats].sort((a, b) => b.churn - a.churn || b.commits - a.commits);
+			const leader = sorted[0];
+			const runner = sorted[1];
+			const gapCommits = leader.commits - runner.commits;
+			const gapChurn = leader.churn - runner.churn;
+			if (leader.commits === 0) diffOut.textContent = `quiet across all ${stats.length} oscillators in this ${ctx.view.span} window`;
+			else diffOut.textContent = `lead: ${leader.card.module.name} (${leader.commits}c · ${formatChurn(leader.churn)}) · +${gapCommits}c / +${formatChurn(gapChurn)} over ${runner.card.module.name}`;
+		} else if (stats.length === 1) diffOut.textContent = `${stats[0].commits} commits · ${formatChurn(stats[0].churn)} churn in ${ctx.view.span}`;
+		else diffOut.textContent = "";
+	}
+}
+/** Redraw the existing oscillator canvases and sync live WT POS telemetry without rebuilding DOM. */
+function drawRackFrames() {
+	for (const card of rackCards) {
+		const wtPos = cardWtPos(card);
+		drawModuleSurface(card.canvas, card.module, card.index, {
+			mode: "rack",
+			wtPos
+		});
+	}
+	syncRackTelemetry();
+}
+/** Wire master rack toolbar events once at boot. */
+function initRackBar() {
+	const slider = document.getElementById("rackWtSlider");
+	if (slider instanceof HTMLInputElement) slider.addEventListener("input", () => {
+		if (!ctx.rackSync) ctx.rackSync = true;
+		scrubGlobalWtPos(Number(slider.value) / 1e3);
+	});
+	const syncBtn = document.getElementById("rackSyncBtn");
+	if (syncBtn) syncBtn.addEventListener("click", () => {
+		ctx.rackSync = !ctx.rackSync;
+		const pos = liveWtPos();
+		for (const card of rackCards) {
+			const osc = getOscParams(card.module.query);
+			osc.pos = ctx.rackSync ? null : pos;
+		}
+		drawRackFrames();
+		announce(ctx.rackSync ? "rack oscillators synced to shared read head" : "rack oscillators unlocked for independent timestamp comparison");
+	});
+	const lfoBtn = document.getElementById("rackLfoBtn");
+	if (lfoBtn) lfoBtn.addEventListener("click", () => togglePlay());
+}
+function cycleModuleSource(index, direction) {
+	if (!ctx.model || !ctx.view) return;
+	const catalog = catalogItems(ctx.model);
+	if (!catalog.length) return;
+	const current = ctx.view.modules[index];
+	if (!current) return;
+	const curIdx = catalog.findIndex((it) => it.query === current.query);
+	const start = curIdx >= 0 ? curIdx : 0;
+	const otherQueries = new Set(ctx.view.modules.filter((_, i) => i !== index).map((m) => m.query));
+	let pick = catalog[(start + direction + catalog.length) % catalog.length];
+	for (let step = 1; step <= catalog.length; step++) {
+		const cand = catalog[((start + direction * step) % catalog.length + catalog.length) % catalog.length];
+		if (!otherQueries.has(cand.query)) {
+			pick = cand;
+			break;
+		}
+	}
+	const modules = ctx.view.modules.map((m, i) => i === index ? {
+		name: pick.name,
+		query: pick.query,
+		colorKey: pick.colorKey
+	} : m);
+	const next = {
+		...ctx.view,
+		modules,
+		query: pick.query
+	};
+	const focused = focusFirstMatch(ctx.model, next, pick.query);
+	ctx.matchIndex = focused.index;
+	setView(focused.view);
+	startDepthScan();
+}
+function renderRack() {
+	const rack = document.getElementById("rack");
+	if (!rack || !ctx.view || !ctx.model || !ctx.palette) return;
+	const sig = rackSignature();
+	if (rackCards.length > 0 && lastSignature === sig && rack.children.length > 0) {
+		drawRackFrames();
+		return;
+	}
+	clear(rack);
+	rackCards = [];
+	lastSignature = sig;
+	const countMods = ctx.view.modules.length;
+	rack.dataset.cols = String(Math.min(4, Math.max(1, countMods)));
+	ctx.view.modules.forEach((module, index) => {
+		const count = module.query ? searchCommits(ctx.model, module.query).count : ctx.model.doc.commits.length;
+		const selected = ctx.view.query === module.query;
+		const color = ctx.palette.identity[module.colorKey] ?? ctx.palette.ok;
+		const osc = getOscParams(module.query);
+		const card = el("article", "module");
+		card.style.setProperty("--sw", color);
+		if (selected) card.classList.add("is-selected");
+		const topbar = el("header", "module-bar");
+		const led = el("span", "osc-led");
+		led.style.setProperty("--sw", color);
+		topbar.appendChild(led);
+		topbar.appendChild(el("span", "module-osc", label(index)));
+		const diffBadge = el("span", "module-diff", "");
+		topbar.appendChild(diffBadge);
+		const barActions = el("div", "module-bar-actions");
+		const open = document.createElement("button");
+		open.type = "button";
+		open.className = "osc-btn";
+		open.textContent = "⤢";
+		open.title = "Expand into Hero 3D + Interactive 2D Scope";
+		open.setAttribute("aria-label", `Open ${module.name}`);
+		open.addEventListener("click", (event) => {
+			event.stopPropagation();
+			if (!ctx.view) return;
+			ctx.browserOpen = false;
+			setView(expandModule(ctx.view, module));
+			startDepthScan();
+		});
+		const remove = document.createElement("button");
+		remove.type = "button";
+		remove.className = "osc-btn";
+		remove.textContent = "×";
+		remove.title = "Remove this oscillator";
+		remove.setAttribute("aria-label", `Remove ${module.name}`);
+		remove.disabled = ctx.view.modules.length <= 1;
+		remove.addEventListener("click", (event) => {
+			event.stopPropagation();
+			if (ctx.view) setView(removeModule(ctx.view, index));
+		});
+		barActions.appendChild(open);
+		barActions.appendChild(remove);
+		topbar.appendChild(barActions);
+		const sourceRow = el("div", "module-source");
+		const nameBtn = document.createElement("button");
+		nameBtn.type = "button";
+		nameBtn.className = "module-name-btn";
+		nameBtn.setAttribute("aria-pressed", selected ? "true" : "false");
+		nameBtn.title = `${module.name} (${module.query || "all commits"}) — click to solo as diff baseline`;
+		nameBtn.appendChild(el("span", "module-name", module.name));
+		nameBtn.appendChild(el("span", "module-count", String(count)));
+		nameBtn.addEventListener("click", () => {
+			if (!ctx.view || !ctx.model) return;
+			const focused = focusFirstMatch(ctx.model, {
+				...ctx.view,
+				query: module.query
+			}, module.query);
+			ctx.matchIndex = focused.index;
+			setView(focused.view);
+			startDepthScan();
+		});
+		const prevSrc = document.createElement("button");
+		prevSrc.type = "button";
+		prevSrc.className = "osc-step";
+		prevSrc.textContent = "‹";
+		prevSrc.title = "Previous Git wavetable source";
+		prevSrc.setAttribute("aria-label", `Previous source for ${label(index)}`);
+		prevSrc.addEventListener("click", (event) => {
+			event.stopPropagation();
+			cycleModuleSource(index, -1);
+		});
+		const nextSrc = document.createElement("button");
+		nextSrc.type = "button";
+		nextSrc.className = "osc-step";
+		nextSrc.textContent = "›";
+		nextSrc.title = "Next Git wavetable source";
+		nextSrc.setAttribute("aria-label", `Next source for ${label(index)}`);
+		nextSrc.addEventListener("click", (event) => {
+			event.stopPropagation();
+			cycleModuleSource(index, 1);
+		});
+		sourceRow.appendChild(nameBtn);
+		sourceRow.appendChild(prevSrc);
+		sourceRow.appendChild(nextSrc);
+		const meterTrack = el("div", "module-meter");
+		const meterFill = el("div", "module-meter-fill");
+		meterFill.style.setProperty("--sw", color);
+		meterTrack.appendChild(meterFill);
+		const viewport = el("div", "module-viewport");
+		const canvas = document.createElement("canvas");
+		canvas.className = "module-wave";
+		canvas.setAttribute("aria-hidden", "true");
+		viewport.appendChild(canvas);
+		const posBadge = el("span", "osc-pos-readout", "");
+		const sliceStats = el("span", "osc-slice-stats", "");
+		viewport.appendChild(posBadge);
+		viewport.appendChild(sliceStats);
+		let drag = null;
+		viewport.addEventListener("pointerdown", (event) => {
+			if (event.button !== 0) return;
+			drag = {
+				x: event.clientX,
+				y: event.clientY,
+				moved: false
+			};
+			try {
+				viewport.setPointerCapture(event.pointerId);
+			} catch {}
+		});
+		viewport.addEventListener("pointermove", (event) => {
+			if (!drag) return;
+			const dx = event.clientX - drag.x;
+			if (Math.abs(dx) > 4) drag.moved = true;
+			if (drag.moved) {
+				const rect = viewport.getBoundingClientRect();
+				const norm = clamp((event.clientX - rect.left) / Math.max(1, rect.width), 0, 1);
+				if (ctx.rackSync) scrubGlobalWtPos(norm);
+				else {
+					osc.pos = norm;
+					drawRackFrames();
+				}
+			}
+		});
+		viewport.addEventListener("pointerup", () => {
+			const wasDrag = drag?.moved;
+			drag = null;
+			if (!wasDrag && ctx.view && ctx.model) {
+				const focused = focusFirstMatch(ctx.model, {
+					...ctx.view,
+					query: module.query
+				}, module.query);
+				ctx.matchIndex = focused.index;
+				setView(focused.view);
+				startDepthScan();
+			}
+		});
+		viewport.addEventListener("pointercancel", () => {
+			drag = null;
+		});
+		viewport.addEventListener("dblclick", () => {
+			if (!ctx.view) return;
+			ctx.browserOpen = false;
+			setView(expandModule(ctx.view, module));
+			startDepthScan();
+		});
+		const deck = el("div", "module-deck");
+		const posKnob = createKnob({
+			label: "WT POS",
+			value: ctx.rackSync ? liveWtPos() : osc.pos ?? liveWtPos(),
+			defaultValue: 1,
+			size: 36,
+			accent: ctx.palette.open,
+			title: "Time-travel WT POS (synced across all oscillators when SYNC is on · double-click for NOW)",
+			format: (v) => Math.round(v * 100) >= 100 ? "NOW" : `${Math.round(v * 100)}%`,
+			onChange(v) {
+				if (ctx.rackSync) scrubGlobalWtPos(v);
+				else {
+					osc.pos = v;
+					drawRackFrames();
+				}
+			},
+			onReset() {
+				if (ctx.rackSync) resetGlobalWtPos();
+				else {
+					osc.pos = 1;
+					drawRackFrames();
+				}
+			}
+		});
+		const depthKnob = createKnob({
+			label: "DEPTH",
+			value: osc.depth,
+			defaultValue: .65,
+			size: 36,
+			accent: color,
+			title: "3D tilt & depth spread (double-click to reset)",
+			onChange(v) {
+				osc.depth = v;
+				drawRackFrames();
+			}
+		});
+		const smoothKnob = createKnob({
+			label: "SMOOTH",
+			value: osc.smooth,
+			defaultValue: .52,
+			size: 36,
+			accent: color,
+			title: "Harmonic wavetable smoothness (double-click to reset)",
+			onChange(v) {
+				osc.smooth = v;
+				drawRackFrames();
+			}
+		});
+		deck.appendChild(posKnob.el);
+		deck.appendChild(depthKnob.el);
+		deck.appendChild(smoothKnob.el);
+		const foot = el("footer", "module-foot");
+		foot.appendChild(el("code", "module-query", module.query || "all commits"));
+		const expandBtn = document.createElement("button");
+		expandBtn.type = "button";
+		expandBtn.className = "op op-xs";
+		expandBtn.textContent = "stage";
+		expandBtn.title = "Open full 3D + Interactive 2D Scope for this oscillator";
+		expandBtn.addEventListener("click", () => {
+			if (!ctx.view) return;
+			ctx.browserOpen = false;
+			setView(expandModule(ctx.view, module));
+			startDepthScan();
+		});
+		foot.appendChild(expandBtn);
+		card.appendChild(topbar);
+		card.appendChild(sourceRow);
+		card.appendChild(meterTrack);
+		card.appendChild(viewport);
+		card.appendChild(deck);
+		card.appendChild(foot);
+		rack.appendChild(card);
+		rackCards.push({
+			el: card,
+			nameBtn,
+			canvas,
+			module,
+			index,
+			posKnob,
+			posBadge,
+			sliceStats,
+			diffBadge,
+			meterFill
+		});
+	});
+	if (ctx.view.modules.length < 8) {
+		const add = document.createElement("button");
+		add.type = "button";
+		add.className = "module-add";
+		add.title = "Pin the current find as a new oscillator";
+		add.appendChild(el("span", "module-add-plus", "+"));
+		add.appendChild(el("span", "module-add-label", "add osc"));
+		add.addEventListener("click", pinCurrent);
+		rack.appendChild(add);
+	}
+	drawRackFrames();
+}
+function pinCurrent() {
+	if (!ctx.view) return;
+	const query = ctx.view.query;
+	const name = query || "All commits";
+	const used = new Set(ctx.view.modules.map((module) => module.colorKey));
+	const colorKey = [
+		0,
+		1,
+		2,
+		3,
+		4,
+		5
+	].find((key) => !used.has(key)) ?? ctx.view.modules.length % 6;
+	const next = pinModule(ctx.view, {
+		name,
+		query,
+		colorKey
+	});
+	if (next === ctx.view) {
+		announce(ctx.view.modules.length >= 8 ? "the rack holds eight oscillators" : "that filter is already pinned");
+		return;
+	}
+	setView(next);
+	announce(`pinned “${name}”`);
+}
+// src/render/strip.js
+/**
+* strip.js — the commit strip under the wave.
+*
+* One button per slot, aligned to the same geometry the canvas uses. The
+* 16-tick meter is the slot's level (0–15); the label is the date and the
+* commit count (or the short sha when a slot holds one commit).
+*/
+function redraw() {
+	if (ctx.view?.depth) {
+		if (!ctx.view.rack) drawDepth();
+	} else drawWave();
+}
+function bandWidth() {
+	const canvas = document.getElementById("wave");
+	const width = canvas ? canvas.getBoundingClientRect().width : 0;
+	if (width > 0) return width;
+	const stage = document.getElementById("stage");
+	const stageW = stage ? stage.getBoundingClientRect().width : 0;
+	if (stageW > 0) return stageW;
+	const host = document.getElementById("slots");
+	return (host ? host.getBoundingClientRect().width : 960) + 80;
+}
+function renderStrip() {
+	const host = document.getElementById("slots");
+	if (!host || !ctx.window || !ctx.view) return;
+	const active = ctx.slots;
+	if (active.length !== 32) return;
+	const geom = slotGeometry(bandWidth(), 32);
+	host.style.setProperty("--slot-gap", `${geom.gap.toFixed(2)}px`);
+	host.style.gridTemplateColumns = `repeat(32, minmax(0, 1fr))`;
+	host.style.setProperty("--metric", ctx.view.depth && ctx.metric ? ctx.metric.color : "");
+	const focusK = ctx.focusCommit ? Math.max(0, Math.min(31, Math.floor((Date.parse(ctx.focusCommit.time) - ctx.window.startMs) / (ctx.window.slotMs || 1)))) : -1;
+	clear(host);
+	const fragment = document.createDocumentFragment();
+	for (let k = 0; k < 32; k++) {
+		const slot = active[k];
+		const cell = document.createElement("button");
+		cell.type = "button";
+		cell.className = "slot";
+		cell.dataset.k = String(k);
+		cell.dataset.x = slotX(k, geom).toFixed(3);
+		if (slot.count === 0) cell.disabled = true;
+		if (slot.agentCount > 0) cell.classList.add("is-agent");
+		if (ctx.view.lens.agents && slot.agentCount > 0) cell.classList.add("is-agent-lens");
+		if (k === focusK) cell.classList.add("is-focus");
+		const label = `slot ${k + 1} of 32, ${dateMedium(slot.startMs)}, ${slot.count} commit${slot.count === 1 ? "" : "s"}, churn ${slot.churn}, level ${slot.level}` + (slot.agentCount ? `, ${slot.agentCount} agent commit${slot.agentCount === 1 ? "" : "s"}` : "");
+		cell.setAttribute("aria-label", label);
+		cell.title = label;
+		cell.appendChild(el("span", "slot-date", dateShort(slot.startMs)));
+		const meter = el("span", "slot-meter");
+		meter.setAttribute("aria-hidden", "true");
+		const norm = slot.level / 15;
+		meter.style.setProperty("--lvl", norm.toFixed(3));
+		for (let i = 0; i < 8; i++) {
+			const tick = document.createElement("i");
+			const waveShape = Math.sin((i + .5) / 8 * Math.PI);
+			const hPct = slot.count === 0 ? 6 : Math.max(14, Math.round((.25 + .75 * norm * waveShape) * 100));
+			tick.style.height = `${hPct}%`;
+			if (slot.count > 0) tick.className = "on";
+			meter.appendChild(tick);
+		}
+		cell.appendChild(meter);
+		const count = slot.count === 1 && slot.newest ? shortSha(slot.newest.sha, 6) : String(slot.count);
+		cell.appendChild(el("span", "slot-count", slot.count === 0 ? "·" : count));
+		fragment.appendChild(cell);
+	}
+	host.appendChild(fragment);
+	const mode = document.getElementById("stripMode");
+	if (mode) mode.textContent = ctx.view.depth ? `OVERVIEW · 32 SLICES · ${ctx.metric?.label ?? "all"} · DRAG TO SELECT` : `OVERVIEW · 32 SLOTS · ${ctx.view.span} · DRAG TO SELECT`;
+	const range = document.getElementById("stripRange");
+	if (range) range.textContent = `${dateMedium(ctx.window.startMs)} – ${dateMedium(ctx.window.endMs)} UTC`;
+}
+function initStrip() {
+	const host = document.getElementById("slots");
+	if (!host) return;
+	let scrubbing = false;
+	const pickAtPointer = (event) => {
+		const elUnder = document.elementFromPoint(event.clientX, event.clientY);
+		const cell = elUnder instanceof Element ? elUnder.closest(".slot") : null;
+		if (!(cell instanceof HTMLElement) || cell.disabled || !ctx.view) return;
+		const slot = ctx.slots[Number(cell.dataset.k)];
+		if (!slot || !slot.newest) return;
+		if (ctx.view.focusSha !== slot.newest.sha) setView(focusSlot(ctx.view, slot));
+	};
+	host.addEventListener("pointerdown", (event) => {
+		if (event.button !== 0) return;
+		scrubbing = true;
+		pickAtPointer(event);
+	});
+	window.addEventListener("pointerup", () => {
+		scrubbing = false;
+	});
+	host.addEventListener("click", (event) => {
+		const target = event.target;
+		const cell = target instanceof Element ? target.closest(".slot") : null;
+		if (!(cell instanceof HTMLElement) || cell.disabled || !ctx.view) return;
+		const slot = ctx.slots[Number(cell.dataset.k)];
+		if (!slot) return;
+		setView(focusSlot(ctx.view, slot));
+	});
+	host.addEventListener("pointermove", (event) => {
+		if (scrubbing) pickAtPointer(event);
+		const target = event.target;
+		const cell = target instanceof Element ? target.closest(".slot") : null;
+		const k = cell instanceof HTMLElement ? Number(cell.dataset.k) : -1;
+		if (k === ctx.hoverSlot) return;
+		ctx.hoverSlot = k;
+		redraw();
+	});
+	host.addEventListener("pointerleave", () => {
+		if (ctx.hoverSlot === -1) return;
+		ctx.hoverSlot = -1;
+		redraw();
+	});
+}
+function initCanvasPointer() {
+	const canvas = document.getElementById("wave");
+	if (!canvas) return;
+	const slotFromEvent = (event) => {
+		const rect = canvas.getBoundingClientRect();
+		const geom = slotGeometry(rect.width, 32);
+		const x = event.clientX - rect.left;
+		return {
+			k: slotAtX(x, geom),
+			x
+		};
+	};
+	canvas.addEventListener("pointermove", (event) => {
+		if (ctx.view?.depth) return;
+		const { k } = slotFromEvent(event);
+		if (k === ctx.hoverSlot) return;
+		ctx.hoverSlot = k;
+		redraw();
+	});
+	canvas.addEventListener("pointerleave", () => {
+		if (ctx.view?.depth) return;
+		if (ctx.hoverSlot === -1) return;
+		ctx.hoverSlot = -1;
+		redraw();
+	});
+	canvas.addEventListener("click", (event) => {
+		if (!ctx.view || ctx.view.depth) return;
+		const { k } = slotFromEvent(event);
+		const slot = ctx.slots[k];
+		if (!slot) return;
+		setView(focusSlot(ctx.view, slot));
+	});
+}
+// src/render/tension.js
+/**
+* tension.js — the amber 2-D "tension vector" for open pull requests.
+*
+* X is age (0–20 days), Y is size relative to the largest open PR. The vector
+* points at the weighted centre of attention; the dots are the pull requests.
+* Activate to open the tray; drag to filter; wheel to widen the filter.
+*/
+var AGE_MAX = 1.2;
+var handlers = {
+	open: () => {},
+	focus: () => {}
+};
+var drag = null;
+var hoverPr = null;
+function fit(canvas) {
+	const rect = canvas.getBoundingClientRect();
+	const dpr = Math.min(window.devicePixelRatio || 1, 2);
+	const width = Math.max(1, Math.round(rect.width));
+	const height = Math.max(1, Math.round(rect.height));
+	if (canvas.width !== Math.round(width * dpr) || canvas.height !== Math.round(height * dpr)) {
+		canvas.width = Math.round(width * dpr);
+		canvas.height = Math.round(height * dpr);
+	}
+	const g = canvas.getContext("2d");
+	g.setTransform(dpr, 0, 0, dpr, 0, 0);
+	return {
+		g,
+		width,
+		height
+	};
+}
+function plot(width, height) {
+	return {
+		left: 11,
+		right: width - 7,
+		top: 8,
+		bottom: height - 13
+	};
+}
+function prPoint(pr, box) {
+	return {
+		x: box.left + agePlot(pr.ageDays) / AGE_MAX * (box.right - box.left),
+		y: box.bottom - pr.amountNorm * (box.bottom - box.top)
+	};
+}
+function drawTension() {
+	const canvas = document.getElementById("tensionPad");
+	const wrap = document.getElementById("tension");
+	if (!canvas || !wrap || !ctx.palette || !ctx.prs) return;
+	const { g, width, height } = fit(canvas);
+	const P = ctx.palette;
+	const box = plot(width, height);
+	const prs = ctx.prs;
+	const lensAge = ctx.view?.lens.age ?? true;
+	const theme = ctx.view?.theme ?? "signal";
+	g.clearRect(0, 0, width, height);
+	g.strokeStyle = rgba(P.dimmer, .7);
+	g.lineWidth = 1;
+	g.beginPath();
+	g.moveTo(box.left, box.top);
+	g.lineTo(box.left, box.bottom);
+	g.lineTo(box.right, box.bottom);
+	g.stroke();
+	g.strokeStyle = rgba(P.line, .9);
+	g.beginPath();
+	g.moveTo(box.left, (box.top + box.bottom) / 2);
+	g.lineTo(box.right, (box.top + box.bottom) / 2);
+	g.moveTo((box.left + box.right) / 2, box.top);
+	g.lineTo((box.left + box.right) / 2, box.bottom);
+	g.stroke();
+	g.font = "8px ui-sans-serif, system-ui, sans-serif";
+	g.fillStyle = P.dimmer;
+	g.textAlign = "left";
+	g.textBaseline = "top";
+	g.fillText("amount", box.left, box.top - 7);
+	g.textAlign = "right";
+	g.textBaseline = "bottom";
+	g.fillText("age →", box.right, height - 1);
+	const empty = prs.length === 0;
+	if (empty) {
+		g.fillStyle = P.dimmer;
+		g.textAlign = "center";
+		g.textBaseline = "middle";
+		g.font = "8.5px ui-sans-serif, system-ui, sans-serif";
+		g.fillText("no open PRs", (box.left + box.right) / 2, (box.top + box.bottom) / 2);
+	}
+	if (ctx.prFilter) {
+		const fx = box.left + ctx.prFilter.x / AGE_MAX * (box.right - box.left);
+		const fy = box.bottom - ctx.prFilter.y * (box.bottom - box.top);
+		const radius = ctx.prFilter.r * Math.min(box.right - box.left, box.bottom - box.top);
+		g.strokeStyle = rgba(P.open, .45);
+		g.setLineDash([2, 3]);
+		g.beginPath();
+		g.arc(fx, fy, radius, 0, Math.PI * 2);
+		g.stroke();
+		g.setLineDash([]);
+	}
+	const centroid = prCentroid(prs);
+	if (centroid) {
+		const px = box.left + centroid.x / AGE_MAX * (box.right - box.left);
+		const py = box.bottom - centroid.y * (box.bottom - box.top);
+		const color = lensAge ? mixHex(P.open, P.risk, clamp(centroid.x / AGE_MAX, 0, 1)) : P.open;
+		g.strokeStyle = color;
+		g.lineWidth = 1.6;
+		g.beginPath();
+		g.moveTo(box.left + 1, box.bottom - 1);
+		g.lineTo(px, py);
+		g.stroke();
+		const angle = Math.atan2(py - (box.bottom - 1), px - (box.left + 1));
+		g.fillStyle = color;
+		g.beginPath();
+		g.moveTo(px, py);
+		g.lineTo(px - 5.5 * Math.cos(angle - .4), py - 5.5 * Math.sin(angle - .4));
+		g.lineTo(px - 5.5 * Math.cos(angle + .4), py - 5.5 * Math.sin(angle + .4));
+		g.closePath();
+		g.fill();
+	}
+	for (const pr of prs) {
+		const { x, y } = prPoint(pr, box);
+		const nx = agePlot(pr.ageDays) / AGE_MAX;
+		const ny = pr.amountNorm;
+		const inFilter = !ctx.prFilter || Math.hypot(nx - ctx.prFilter.x / AGE_MAX, ny - ctx.prFilter.y) <= ctx.prFilter.r;
+		const color = lensAge ? ageColor(theme, pr.ageNorm) : P.open;
+		const radius = 3 + pr.amountNorm * 1.8;
+		g.save();
+		g.globalAlpha = inFilter ? 1 : .22;
+		if (pr.pr.draft) {
+			g.strokeStyle = color;
+			g.lineWidth = 1.4;
+			g.beginPath();
+			g.arc(x, y, radius, 0, Math.PI * 2);
+			g.stroke();
+		} else {
+			g.fillStyle = color;
+			g.beginPath();
+			g.arc(x, y, radius, 0, Math.PI * 2);
+			g.fill();
+		}
+		if (pr.pr.conflicts) {
+			g.strokeStyle = color;
+			g.lineWidth = 1;
+			g.setLineDash([1.5, 1.5]);
+			g.beginPath();
+			g.arc(x, y, radius + 2.6, 0, Math.PI * 2);
+			g.stroke();
+			g.setLineDash([]);
+		}
+		if (pr.agentAuthored) {
+			g.fillStyle = P.agent;
+			g.beginPath();
+			g.arc(x, y, 1.2, 0, Math.PI * 2);
+			g.fill();
+		}
+		if (hoverPr === pr) {
+			g.strokeStyle = P.handle;
+			g.lineWidth = 1.2;
+			g.beginPath();
+			g.arc(x, y, radius + 3.5, 0, Math.PI * 2);
+			g.stroke();
+		}
+		g.restore();
+	}
+	wrap.dataset.empty = empty ? "true" : "false";
+	const count = document.getElementById("tensionCount");
+	if (count) count.textContent = String(prs.length);
+	const stale = prs.filter((pr) => pr.stale).length;
+	wrap.setAttribute("aria-label", prs.length ? `Pull request tension: ${prs.length} open, ${stale} stale. Activate to list them.` : "Pull request tension: no open pull requests.");
+	wrap.title = prs.length ? `${prs.length} open · ${stale} stale · click for the list` : "no open pull requests";
+}
+/** Geometry of the pad, used by pointer hit-testing. */
+function pointerPr(event) {
+	const canvas = document.getElementById("tensionPad");
+	if (!canvas) return {
+		pr: null,
+		point: null
+	};
+	const rect = canvas.getBoundingClientRect();
+	const box = plot(rect.width, rect.height);
+	const x = event.clientX - rect.left;
+	const y = event.clientY - rect.top;
+	let nearest = null;
+	let best = 13;
+	for (const pr of ctx.prs) {
+		const point = prPoint(pr, box);
+		const distance = Math.hypot(point.x - x, point.y - y);
+		if (distance < best) {
+			best = distance;
+			nearest = pr;
+		}
+	}
+	const rx = clamp((x - box.left) / Math.max(1, box.right - box.left), 0, 1);
+	const ry = clamp((box.bottom - y) / Math.max(1, box.bottom - box.top), 0, 1);
+	return {
+		pr: nearest,
+		point: {
+			x: rx * AGE_MAX,
+			y: ry,
+			px: x,
+			py: y,
+			rx,
+			ry
+		},
+		box
+	};
+}
+function initTension(nextHandlers) {
+	handlers = {
+		...handlers,
+		...nextHandlers
+	};
+	const wrap = document.getElementById("tension");
+	if (!wrap) return;
+	wrap.addEventListener("pointerdown", (event) => {
+		if (event.button !== 0) return;
+		drag = {
+			x: event.clientX,
+			y: event.clientY,
+			moved: false
+		};
+		try {
+			wrap.setPointerCapture(event.pointerId);
+		} catch {}
+	});
+	wrap.addEventListener("pointermove", (event) => {
+		const { pr } = pointerPr(event);
+		hoverPr = pr;
+		if (drag) {
+			if (Math.hypot(event.clientX - drag.x, event.clientY - drag.y) > 5) drag.moved = true;
+			const { point } = pointerPr(event);
+			if (point) ctx.prFilter = {
+				x: point.x,
+				y: point.y,
+				r: ctx.prFilter?.r ?? .4
+			};
+			drawTension();
+		} else drawTension();
+	});
+	wrap.addEventListener("pointerup", (event) => {
+		const wasDrag = drag?.moved;
+		drag = null;
+		if (wasDrag) {
+			drawTension();
+			return;
+		}
+		const { pr } = pointerPr(event);
+		if (pr) handlers.focus(pr);
+		else handlers.open();
+		drawTension();
+	});
+	wrap.addEventListener("pointercancel", () => {
+		drag = null;
+		drawTension();
+	});
+	wrap.addEventListener("wheel", (event) => {
+		event.preventDefault();
+		const current = ctx.prFilter;
+		ctx.prFilter = current ? {
+			...current,
+			r: clamp(current.r + (event.deltaY > 0 ? .06 : -.06), .15, .95)
+		} : {
+			x: AGE_MAX / 2,
+			y: .5,
+			r: .4
+		};
+		drawTension();
+	}, { passive: false });
+	wrap.addEventListener("keydown", (event) => {
+		if (event.key === "Enter" || event.key === " ") {
+			event.preventDefault();
+			handlers.open();
+		}
+		if (event.key === "Escape") {
+			event.preventDefault();
+			ctx.prFilter = null;
+			drawTension();
+		}
+	});
+	wrap.addEventListener("pointerleave", () => {
+		if (drag) return;
+		if (hoverPr) {
+			hoverPr = null;
+			drawTension();
+		}
+	});
+}
+// src/render/readout.js
+/**
+* readout.js — the header readout, the focus card and the tension summary.
+*
+* Every commit string is written with textContent: subjects are untrusted.
+*/
+function stat(text, className) {
+	return el("span", className || "", text);
+}
+function reviewLabel(value) {
+	return {
+		none: "no review",
+		required: "review required",
+		approved: "approved",
+		changes_requested: "changes requested"
+	}[value] || value;
+}
+function checksLabel(value) {
+	return {
+		none: "no checks",
+		pending: "checks pending",
+		passing: "checks passing",
+		failing: "checks failing"
+	}[value] || value;
+}
+function renderReadout() {
+	if (!ctx.doc || !ctx.view || !ctx.window) return;
+	const repoOut = document.getElementById("repoOut");
+	if (repoOut) repoOut.textContent = `${ctx.doc.repo.name} · ${ctx.doc.refs.length} refs · ${ctx.doc.commits.length} commits`;
+	const focusOut = document.getElementById("focusOut");
+	if (focusOut) focusOut.textContent = ctx.focusRef ? `${ctx.focusRef.name}${ctx.view.focusSha ? ` · ${shortSha(ctx.view.focusSha)}` : ""}` : "no ref focused";
+	const windowOut = document.getElementById("windowOut");
+	if (windowOut) {
+		if (ctx.view.depth) {
+			const span = ctx.window.endMs - ctx.window.startMs;
+			const pct = ctx.model ? Math.round(wtPosOf(ctx.model, ctx.view) * 100) : 100;
+			windowOut.textContent = ctx.view.rack ? `rack · WT ${pct}% · ${dateShort(ctx.window.endMs)}` : `stage · WT ${pct}% · ${dateShort(ctx.window.startMs)}–${dateShort(ctx.window.endMs)}`;
+			windowOut.title = `${dateShort(ctx.window.startMs)} – ${dateShort(ctx.window.endMs)} (${Math.round(span / 864e5)} days)`;
+		} else {
+			windowOut.textContent = `${ctx.view.span} · ${dateShort(ctx.window.startMs)} – ${dateShort(ctx.window.endMs)}`;
+			windowOut.title = "";
+		}
+	}
+	renderCommitCard();
+	renderTensionSummary();
+	const wave = document.getElementById("wave");
+	if (wave) {
+		const stale = ctx.prs.filter((pr) => pr.stale).length;
+		const mode = ctx.view.depth ? "3D depth field" : "2D history";
+		const search = ctx.search.query ? ` Search “${ctx.search.query}”: ${ctx.search.count} matches.` : "";
+		wave.setAttribute("aria-label", `${mode}: ${ctx.view.span} ending ${dateShort(ctx.window.endMs)}, ${ctx.waves.length} visible refs, ${ctx.prs.length} open pull requests, ${stale} stale. Metric ${ctx.metric ? ctx.metric.label : "all"}. Focus ${ctx.focusRef ? ctx.focusRef.name : "none"}.${search}`);
+	}
+}
+function renderCommitCard() {
+	const sha = document.getElementById("commitSha");
+	const author = document.getElementById("commitAuthor");
+	const subject = document.getElementById("commitSubject");
+	const stats = document.getElementById("commitStats");
+	const copy = document.getElementById("copyCommit");
+	if (!sha || !author || !subject || !stats || !copy) return;
+	const commit = ctx.focusCommit;
+	stats.replaceChildren();
+	author.replaceChildren();
+	if (!commit) {
+		sha.textContent = "—";
+		subject.textContent = "no commit focused";
+		copy.disabled = true;
+		copy.dataset.command = "";
+		return;
+	}
+	sha.textContent = shortSha(commit.sha, 7);
+	sha.title = commit.sha;
+	author.append(document.createTextNode(commit.author.name));
+	if (commit.author.kind === "agent") {
+		author.append(document.createTextNode(" "));
+		author.append(stat("◈ agent", "agent-mark"));
+		if (commit.agent) author.append(document.createTextNode(` ${commit.agent.model}`));
+	}
+	subject.textContent = commit.subject;
+	stats.appendChild(stat(`+${commit.insertions}`, "add"));
+	stats.appendChild(stat(`−${commit.deletions}`, "del"));
+	stats.appendChild(stat(`${commit.files} files`));
+	if (commit.merge) stats.appendChild(stat("merge", "warn"));
+	if (commit.parents.length !== 1) stats.appendChild(stat(`${commit.parents.length} parents`));
+	const refId = commit.refs[0];
+	const ref = refId ? ctx.model?.refsById.get(refId) : null;
+	if (ref) {
+		stats.appendChild(stat(`ref ${ref.name}`));
+		const pr = ref.pr;
+		if (pr && commit.sha === ref.tip) {
+			stats.appendChild(stat(`PR #${pr.number} ${pr.state}`));
+			stats.appendChild(stat(reviewLabel(pr.review)));
+			stats.appendChild(stat(checksLabel(pr.checks), pr.checks === "failing" ? "warn" : ""));
+			if (pr.conflicts) stats.appendChild(stat("conflict", "warn"));
+		}
+	}
+	stats.appendChild(stat(timeFull(Date.parse(commit.time))));
+	copy.disabled = false;
+	copy.dataset.command = `git show ${commit.sha} --stat`;
+}
+function renderTensionSummary() {
+	const host = document.getElementById("tensionSummary");
+	if (!host) return;
+	host.replaceChildren();
+	if (!ctx.prs.length) {
+		host.textContent = "no open pull requests";
+		return;
+	}
+	const stale = ctx.prs.filter((pr) => pr.stale).length;
+	const max = ctx.prs.reduce((value, pr) => Math.max(value, pr.tension), 0);
+	host.appendChild(el("span", "", `tension ${max.toFixed(2)}`));
+	host.appendChild(el("span", "", `${ctx.prs.length} open`));
+	if (stale) host.appendChild(el("span", "risk", `${stale} stale`));
+}
+function initReadout() {
+	const copy = document.getElementById("copyCommit");
+	if (!copy) return;
+	copy.addEventListener("click", () => {
+		const command = copy.dataset.command;
+		if (!command) return;
+		copyText(command, "git command copied");
+	});
+}
+// src/ui/legend.js
+/**
+* legend.js — every ref, its colour, its PR state and its visibility eye.
+*/
+function renderLegend() {
+	const host = document.getElementById("legend");
+	if (!host || !ctx.model || !ctx.view) return;
+	clear(host);
+	for (const ref of ctx.model.doc.refs) {
+		const visible = ctx.view.refs.includes(ref.id);
+		const item = el("div", "legend-item");
+		if (!visible) item.classList.add("is-hidden");
+		if (ctx.view.lens.agents && !refHasAgent(ctx.model, ref.id)) item.classList.add("is-dimmed");
+		const focus = document.createElement("button");
+		focus.type = "button";
+		focus.className = "legend-focus";
+		focus.setAttribute("aria-pressed", ctx.view.focusRef === ref.id ? "true" : "false");
+		focus.title = `${ref.name} · ${ref.kind}` + (ref.pr ? ` · PR #${ref.pr.number} ${ref.pr.state}` : " · no pull request");
+		const swatch = el("span", "legend-swatch");
+		swatch.style.setProperty("--sw", identityOf(ref));
+		focus.appendChild(swatch);
+		focus.appendChild(el("span", "legend-name", ref.name));
+		if (ref.pr && (ref.pr.state === "open" || ref.pr.state === "draft")) focus.appendChild(el("span", "legend-pr", "●"));
+		focus.addEventListener("click", () => {
+			setView(focusRefView(ctx.model, showRef(ctx.view, ref.id), ref));
+		});
+		const eye = document.createElement("button");
+		eye.type = "button";
+		eye.className = "legend-eye";
+		eye.setAttribute("aria-pressed", visible ? "true" : "false");
+		eye.setAttribute("aria-label", `${visible ? "Hide" : "Show"} ${ref.name}`);
+		eye.title = `${visible ? "Hide" : "Show"} ${ref.name}`;
+		eye.textContent = visible ? "◉" : "○";
+		eye.addEventListener("click", () => {
+			setView(toggleRef(ctx.view, ref.id));
+		});
+		item.appendChild(focus);
+		item.appendChild(eye);
+		host.appendChild(item);
+	}
+}
+// src/ui/help.js
+/**
+* help.js — the keyboard map and the model in one panel.
+*/
+var open = false;
+function panel() {
+	return document.getElementById("helpPanel");
+}
+function setTab(tab) {
+	const keys = document.getElementById("helpTabKeys");
+	const about = document.getElementById("helpTabAbout");
+	const keysPanel = document.getElementById("helpKeys");
+	const aboutPanel = document.getElementById("helpAbout");
+	if (!keys || !about || !keysPanel || !aboutPanel) return;
+	const showKeys = tab === "keys";
+	keys.setAttribute("aria-selected", showKeys ? "true" : "false");
+	about.setAttribute("aria-selected", showKeys ? "false" : "true");
+	keys.tabIndex = showKeys ? 0 : -1;
+	about.tabIndex = showKeys ? -1 : 0;
+	keysPanel.hidden = !showKeys;
+	aboutPanel.hidden = showKeys;
+}
+function openHelp(tab = "keys") {
+	const node = panel();
+	if (!node) return;
+	open = true;
+	node.hidden = false;
+	setTab(tab);
+	const button = document.getElementById("helpBtn");
+	if (button) button.setAttribute("aria-expanded", "true");
+	const selected = node.querySelector("[role=\"tab\"][aria-selected=\"true\"]");
+	if (selected instanceof HTMLElement) selected.focus({ preventScroll: true });
+}
+function closeHelp() {
+	const node = panel();
+	if (!node || !open) return;
+	open = false;
+	node.hidden = true;
+	const button = document.getElementById("helpBtn");
+	if (button) {
+		button.setAttribute("aria-expanded", "false");
+		button.focus({ preventScroll: true });
+	}
+}
+function toggleHelp() {
+	if (open) closeHelp();
+	else openHelp();
+}
+function initHelp() {
+	const button = document.getElementById("helpBtn");
+	const close = document.getElementById("helpClose");
+	const keys = document.getElementById("helpTabKeys");
+	const about = document.getElementById("helpTabAbout");
+	const tabs = [keys, about].filter((node) => node instanceof HTMLElement);
+	if (button) button.addEventListener("click", () => toggleHelp());
+	if (close) close.addEventListener("click", closeHelp);
+	if (keys) keys.addEventListener("click", () => setTab("keys"));
+	if (about) about.addEventListener("click", () => setTab("about"));
+	for (const tab of tabs) tab.addEventListener("keydown", (event) => {
+		if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+		event.preventDefault();
+		const next = event.key === "ArrowRight" ? "about" : "keys";
+		setTab(next);
+		const target = document.getElementById(next === "about" ? "helpTabAbout" : "helpTabKeys");
+		if (target) target.focus();
+	});
+}
 // src/ui/keyboard.js
 /**
 * keyboard.js — global travel keys. Local widgets keep their native keys.
@@ -8795,11 +9433,13 @@ function advanceTransport() {
 	if (!ctx.view || !ctx.model) return;
 	const step = transportStep(ctx.model, ctx.view, lfoDir);
 	lfoDir = step.direction;
+	ctx.lfoDir = lfoDir;
 	setView(step.view);
 }
 function lfoFrame(now) {
 	if (!ctx.view?.motion.playing) {
 		lfoRunning = false;
+		ctx.depthPhase = 0;
 		return;
 	}
 	const interval = 1e3 / (ctx.reducedMotion ? 1 : ctx.view.motion.rate);
@@ -8811,7 +9451,7 @@ function lfoFrame(now) {
 		advanceTransport();
 		if (!ctx.view?.motion.playing) break;
 	}
-	if (ctx.view?.depth) ctx.depthPhase = Math.max(0, Math.min(1, lfoAcc / interval));
+	if (ctx.view?.depth) ctx.depthPhase = ctx.view.motion.playing ? Math.max(0, Math.min(1, lfoAcc / interval)) : 0;
 	requestAnimationFrame(lfoFrame);
 }
 var ambientRunning = false;
@@ -8884,11 +9524,13 @@ function renderAll() {
 	const viewport = document.getElementById("stageViewport");
 	const scope2dWrap = document.getElementById("scope2dWrap");
 	const stageKnobs = document.getElementById("stageKnobs");
+	const rackBar = document.getElementById("rackBar");
 	const rack = document.getElementById("rack");
 	const browser = document.getElementById("browser");
 	if (viewport) viewport.hidden = mode === "rack" || mode === "browser";
 	if (scope2dWrap) scope2dWrap.hidden = mode !== "depth";
 	if (stageKnobs) stageKnobs.hidden = mode !== "depth";
+	if (rackBar) rackBar.hidden = mode !== "rack";
 	if (rack) rack.hidden = mode !== "rack";
 	if (browser) browser.hidden = mode !== "browser";
 	if (ctx.treeOpen) renderTree();
@@ -8906,7 +9548,7 @@ function renderAll() {
 		if (node) node.hidden = !expanded;
 	}
 	const hint = document.getElementById("hint");
-	if (hint) hint.textContent = mode === "rack" ? "drag across a wavetable to scrub WT POS · double-click to expand · space to play" : mode === "browser" ? "click a wavetable to load · double-click to open 3D stage · heart to favorite" : mode === "depth" ? "drag to orbit 3D perspective · double-click resets · turn knobs to sculpt" : "wheel to travel · click a commit · space to play";
+	if (hint) hint.textContent = mode === "rack" ? "drag any wavetable or WT POS to time-travel in sync · click card to set diff baseline · space to scan" : mode === "browser" ? "click a wavetable to load · double-click to open 3D stage · heart to favorite" : mode === "depth" ? "drag 3D to orbit · turn WT POS or press Space to scan history · hover/click 2D scope peaks to inspect" : "wheel to travel · click a commit · space to play";
 	renderStrip();
 	drawTension();
 	renderReadout();
@@ -8978,6 +9620,8 @@ try {
 	initStrip();
 	initCanvasPointer();
 	initDepthOrbit();
+	initScope2d();
+	initRackBar();
 	initTension({
 		open: () => {
 			ctx.prFilter = null;
@@ -10125,11 +10769,18 @@ select:focus {
   backdrop-filter: blur(8px);
 }
 
-/* Paired 2D Active Slice Oscilloscope */
+.stage-scan-btn {
+  align-self: center;
+  font-family: var(--mono);
+  font-weight: 600;
+  padding: 5px 9px;
+}
+
+/* Paired 2D Interactive Commit Scope */
 .scope2d-wrap {
-  flex: 0.68 1 0;
-  min-height: 104px;
-  max-height: 180px;
+  flex: 0.72 1 0;
+  min-height: 112px;
+  max-height: 186px;
   border-top: 1px solid var(--line);
   background: var(--bg);
   position: relative;
@@ -10139,6 +10790,144 @@ select:focus {
   width: 100%;
   height: 100%;
   display: block;
+  cursor: crosshair;
+}
+
+.scope-tooltip {
+  position: absolute;
+  top: 24px;
+  z-index: 12;
+  width: 228px;
+  padding: 7px 9px;
+  background: color-mix(in srgb, var(--panel) 94%, transparent);
+  border: 1px solid color-mix(in srgb, var(--open) 48%, var(--line-hi));
+  border-radius: 6px;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.55);
+  pointer-events: none;
+  backdrop-filter: blur(8px);
+}
+
+.scope-tip-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-bottom: 3px;
+}
+
+.scope-tip-date {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  color: var(--open);
+}
+
+.scope-tip-stats {
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.scope-tip-commit {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 2px;
+}
+
+.scope-tip-sha {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  color: var(--ok);
+}
+
+.scope-tip-author {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  color: var(--dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scope-tip-subject {
+  font-size: 11px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- Master Synced Rack Comparison Toolbar ------------------------------- */
+
+.rack-bar {
+  flex: 0 0 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 16px;
+  background: color-mix(in srgb, var(--panel) 88%, var(--bg));
+  border-bottom: 1px solid var(--line);
+}
+
+.rack-bar-label {
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: var(--dimmer);
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.rack-wt-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  flex: 0 1 190px;
+  min-width: 90px;
+  height: 4px;
+  border-radius: 99px;
+  background: var(--line-hi);
+  outline: none;
+  cursor: pointer;
+}
+
+.rack-wt-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--open);
+  border: 1.5px solid var(--handle-hi);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--open) 68%, transparent);
+  cursor: pointer;
+}
+
+.rack-wt-slider:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.rack-bar-time {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--open);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.rack-bar-diff {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ---- Serum / Vital 3D Oscillator Rack ------------------------------------ */
@@ -10149,7 +10938,7 @@ select:focus {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr)) 46px;
   gap: 12px;
-  padding: 14px 16px 26px;
+  padding: 10px 16px 24px;
   align-items: stretch;
   overflow-x: auto;
   overflow-y: hidden;
@@ -10219,12 +11008,49 @@ select:focus {
   color: var(--text);
 }
 
-.module-type {
+.module-diff {
   font-family: var(--mono);
   font-size: 9px;
-  letter-spacing: 0.12em;
-  color: var(--dimmer);
-  margin-left: 2px;
+  letter-spacing: 0.04em;
+  color: var(--dim);
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
+  border: 1px solid var(--line-soft);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.module-diff.is-base {
+  color: var(--handle-hi);
+  border-color: color-mix(in srgb, var(--sw, var(--ok)) 55%, var(--line));
+  background: color-mix(in srgb, var(--sw, var(--ok)) 16%, var(--bg));
+}
+
+.module-diff.is-pos {
+  color: var(--ok-hi);
+  border-color: color-mix(in srgb, var(--ok) 40%, var(--line-soft));
+}
+
+.module-diff.is-neg {
+  color: var(--dim);
+}
+
+.module-meter {
+  flex: 0 0 2px;
+  height: 2px;
+  width: 100%;
+  background: var(--line-soft);
+  overflow: hidden;
+}
+
+.module-meter-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--sw, var(--ok));
+  transition: width 140ms ease;
 }
 
 .module-bar-actions {
@@ -10355,6 +11181,22 @@ select:focus {
   padding: 1px 5px;
   border-radius: 3px;
   border: 1px solid color-mix(in srgb, var(--open) 28%, transparent);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+.osc-slice-stats {
+  position: absolute;
+  right: 9px;
+  bottom: 7px;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  color: var(--dim);
+  background: color-mix(in srgb, var(--bg) 78%, transparent);
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid var(--line-soft);
+  font-variant-numeric: tabular-nums;
   pointer-events: none;
 }
 
@@ -10725,8 +11567,9 @@ select:focus {
   transition: border-color 100ms ease, background 100ms ease, box-shadow 100ms ease;
 }
 
-.slot:hover:not(:disabled) {
-  border-color: var(--line-hi);
+.slot:hover:not(:disabled),
+.slot.is-hover {
+  border-color: color-mix(in srgb, var(--open) 65%, var(--line-hi));
   background: var(--panel-hi);
 }
 
@@ -11345,8 +12188,32 @@ select:focus {
       </div>
 
       <!-- Warpenter Paired 2D Active Slice Oscilloscope (visible in Stage mode) -->
-      <div class="scope2d-wrap" id="scope2dWrap" hidden aria-label="Active 2D wavetable slice oscilloscope">
-        <canvas id="scope2d" aria-hidden="true"></canvas>
+      <div class="scope2d-wrap" id="scope2dWrap" hidden aria-label="Interactive 2D commit scope">
+        <canvas id="scope2d" role="img" aria-label="2D active slice commit peaks"></canvas>
+        <div class="scope-tooltip" id="scopeTooltip" hidden role="status">
+          <div class="scope-tip-head">
+            <span class="scope-tip-date" id="scopeTipDate"></span>
+            <span class="scope-tip-stats" id="scopeTipStats"></span>
+          </div>
+          <div class="scope-tip-commit">
+            <code class="scope-tip-sha" id="scopeTipSha"></code>
+            <span class="scope-tip-author" id="scopeTipAuthor"></span>
+          </div>
+          <div class="scope-tip-subject" id="scopeTipSubject"></div>
+        </div>
+      </div>
+
+      <!-- Synced Rack Comparison Toolbar (visible in Rack mode) -->
+      <div class="rack-bar" id="rackBar" hidden role="region" aria-label="Rack time-travel and comparison">
+        <button class="op op-xs op-play" id="rackLfoBtn" type="button" aria-pressed="false"
+                title="Scan all oscillators through Git history (Space)">▶ scan</button>
+        <button class="op op-xs" id="rackSyncBtn" type="button" aria-pressed="true"
+                title="Lock all oscillators to the same WT POS timestamp">sync</button>
+        <label class="rack-bar-label" for="rackWtSlider">WT POS</label>
+        <input class="rack-wt-slider" id="rackWtSlider" type="range" min="0" max="1000" step="1" value="1000"
+               aria-label="Master wavetable position across all oscillators" />
+        <span class="rack-bar-time" id="rackTimeOut">—</span>
+        <span class="rack-bar-diff" id="rackDiffOut">—</span>
       </div>
 
       <!-- Serum / Vital 3D Oscillator Rack -->
@@ -11487,12 +12354,14 @@ select:focus {
       <dt>?</dt><dd>this panel</dd>
     </dl>
     <h3>how to read it</h3>
-    <p><b>Rack</b> renders saved Git filters side by side as sculpted 3D wavetable oscillators.
-      Use <code>‹ ›</code> to cycle sources, drag across any wavetable or turn <b>WT POS</b>,
-      <b>DEPTH</b> and <b>SMOOTH</b> knobs to sculpt the view, or double-click to expand.</p>
-    <p><b>Stage</b> pairs the full volumetric 3D wavetable (drag to orbit) with a real-time
-      <b>2D Active Slice Oscilloscope</b> synced 1:1 to the travelling amber playhead.
-      <b>Browser</b> opens the borderless 3D gallery of every branch, author and preset.</p>
+    <p><b>Rack</b> renders saved Git filters side by side as full-history 3D wavetable oscillators.
+      In <b>sync</b> mode (default), scrubbing <b>WT POS</b> on any card or the master bar time-travels
+      every oscillator and the overview strip to the exact same timestamp, showing live commit/churn
+      counts and signed <b>Δ diffs</b> against the selected baseline oscillator.</p>
+    <p><b>Stage</b> couples the full-history 3D wavetable (drag to orbit) to the repository read head
+      and pairs it with an <b>interactive 2D Commit Scope</b> aligned 1:1 with the 32-slot overview strip.
+      Hover any peak for a commit breakdown, click/scrub to inspect in <code>01 // COMMIT</code>, or press
+      <code>Space</code> to scan history with the LFO transport.</p>
   </div>
 
   <div id="helpAbout" role="tabpanel" aria-labelledby="helpTabAbout" hidden>

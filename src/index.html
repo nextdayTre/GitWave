@@ -116,8 +116,32 @@
       </div>
 
       <!-- Warpenter Paired 2D Active Slice Oscilloscope (visible in Stage mode) -->
-      <div class="scope2d-wrap" id="scope2dWrap" hidden aria-label="Active 2D wavetable slice oscilloscope">
-        <canvas id="scope2d" aria-hidden="true"></canvas>
+      <div class="scope2d-wrap" id="scope2dWrap" hidden aria-label="Interactive 2D commit scope">
+        <canvas id="scope2d" role="img" aria-label="2D active slice commit peaks"></canvas>
+        <div class="scope-tooltip" id="scopeTooltip" hidden role="status">
+          <div class="scope-tip-head">
+            <span class="scope-tip-date" id="scopeTipDate"></span>
+            <span class="scope-tip-stats" id="scopeTipStats"></span>
+          </div>
+          <div class="scope-tip-commit">
+            <code class="scope-tip-sha" id="scopeTipSha"></code>
+            <span class="scope-tip-author" id="scopeTipAuthor"></span>
+          </div>
+          <div class="scope-tip-subject" id="scopeTipSubject"></div>
+        </div>
+      </div>
+
+      <!-- Synced Rack Comparison Toolbar (visible in Rack mode) -->
+      <div class="rack-bar" id="rackBar" hidden role="region" aria-label="Rack time-travel and comparison">
+        <button class="op op-xs op-play" id="rackLfoBtn" type="button" aria-pressed="false"
+                title="Scan all oscillators through Git history (Space)">▶ scan</button>
+        <button class="op op-xs" id="rackSyncBtn" type="button" aria-pressed="true"
+                title="Lock all oscillators to the same WT POS timestamp">sync</button>
+        <label class="rack-bar-label" for="rackWtSlider">WT POS</label>
+        <input class="rack-wt-slider" id="rackWtSlider" type="range" min="0" max="1000" step="1" value="1000"
+               aria-label="Master wavetable position across all oscillators" />
+        <span class="rack-bar-time" id="rackTimeOut">—</span>
+        <span class="rack-bar-diff" id="rackDiffOut">—</span>
       </div>
 
       <!-- Serum / Vital 3D Oscillator Rack -->
@@ -258,12 +282,14 @@
       <dt>?</dt><dd>this panel</dd>
     </dl>
     <h3>how to read it</h3>
-    <p><b>Rack</b> renders saved Git filters side by side as sculpted 3D wavetable oscillators.
-      Use <code>‹ ›</code> to cycle sources, drag across any wavetable or turn <b>WT POS</b>,
-      <b>DEPTH</b> and <b>SMOOTH</b> knobs to sculpt the view, or double-click to expand.</p>
-    <p><b>Stage</b> pairs the full volumetric 3D wavetable (drag to orbit) with a real-time
-      <b>2D Active Slice Oscilloscope</b> synced 1:1 to the travelling amber playhead.
-      <b>Browser</b> opens the borderless 3D gallery of every branch, author and preset.</p>
+    <p><b>Rack</b> renders saved Git filters side by side as full-history 3D wavetable oscillators.
+      In <b>sync</b> mode (default), scrubbing <b>WT POS</b> on any card or the master bar time-travels
+      every oscillator and the overview strip to the exact same timestamp, showing live commit/churn
+      counts and signed <b>Δ diffs</b> against the selected baseline oscillator.</p>
+    <p><b>Stage</b> couples the full-history 3D wavetable (drag to orbit) to the repository read head
+      and pairs it with an <b>interactive 2D Commit Scope</b> aligned 1:1 with the 32-slot overview strip.
+      Hover any peak for a commit breakdown, click/scrub to inspect in <code>01 // COMMIT</code>, or press
+      <code>Space</code> to scan history with the LFO transport.</p>
   </div>
 
   <div id="helpAbout" role="tabpanel" aria-labelledby="helpTabAbout" hidden>

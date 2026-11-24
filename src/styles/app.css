@@ -1098,11 +1098,18 @@ select:focus {
   backdrop-filter: blur(8px);
 }
 
-/* Paired 2D Active Slice Oscilloscope */
+.stage-scan-btn {
+  align-self: center;
+  font-family: var(--mono);
+  font-weight: 600;
+  padding: 5px 9px;
+}
+
+/* Paired 2D Interactive Commit Scope */
 .scope2d-wrap {
-  flex: 0.68 1 0;
-  min-height: 104px;
-  max-height: 180px;
+  flex: 0.72 1 0;
+  min-height: 112px;
+  max-height: 186px;
   border-top: 1px solid var(--line);
   background: var(--bg);
   position: relative;
@@ -1112,6 +1119,144 @@ select:focus {
   width: 100%;
   height: 100%;
   display: block;
+  cursor: crosshair;
+}
+
+.scope-tooltip {
+  position: absolute;
+  top: 24px;
+  z-index: 12;
+  width: 228px;
+  padding: 7px 9px;
+  background: color-mix(in srgb, var(--panel) 94%, transparent);
+  border: 1px solid color-mix(in srgb, var(--open) 48%, var(--line-hi));
+  border-radius: 6px;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.55);
+  pointer-events: none;
+  backdrop-filter: blur(8px);
+}
+
+.scope-tip-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-bottom: 3px;
+}
+
+.scope-tip-date {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  color: var(--open);
+}
+
+.scope-tip-stats {
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.scope-tip-commit {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 2px;
+}
+
+.scope-tip-sha {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  color: var(--ok);
+}
+
+.scope-tip-author {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  color: var(--dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scope-tip-subject {
+  font-size: 11px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- Master Synced Rack Comparison Toolbar ------------------------------- */
+
+.rack-bar {
+  flex: 0 0 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 16px;
+  background: color-mix(in srgb, var(--panel) 88%, var(--bg));
+  border-bottom: 1px solid var(--line);
+}
+
+.rack-bar-label {
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: var(--dimmer);
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.rack-wt-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  flex: 0 1 190px;
+  min-width: 90px;
+  height: 4px;
+  border-radius: 99px;
+  background: var(--line-hi);
+  outline: none;
+  cursor: pointer;
+}
+
+.rack-wt-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--open);
+  border: 1.5px solid var(--handle-hi);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--open) 68%, transparent);
+  cursor: pointer;
+}
+
+.rack-wt-slider:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.rack-bar-time {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--open);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.rack-bar-diff {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ---- Serum / Vital 3D Oscillator Rack ------------------------------------ */
@@ -1122,7 +1267,7 @@ select:focus {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr)) 46px;
   gap: 12px;
-  padding: 14px 16px 26px;
+  padding: 10px 16px 24px;
   align-items: stretch;
   overflow-x: auto;
   overflow-y: hidden;
@@ -1192,12 +1337,49 @@ select:focus {
   color: var(--text);
 }
 
-.module-type {
+.module-diff {
   font-family: var(--mono);
   font-size: 9px;
-  letter-spacing: 0.12em;
-  color: var(--dimmer);
-  margin-left: 2px;
+  letter-spacing: 0.04em;
+  color: var(--dim);
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
+  border: 1px solid var(--line-soft);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.module-diff.is-base {
+  color: var(--handle-hi);
+  border-color: color-mix(in srgb, var(--sw, var(--ok)) 55%, var(--line));
+  background: color-mix(in srgb, var(--sw, var(--ok)) 16%, var(--bg));
+}
+
+.module-diff.is-pos {
+  color: var(--ok-hi);
+  border-color: color-mix(in srgb, var(--ok) 40%, var(--line-soft));
+}
+
+.module-diff.is-neg {
+  color: var(--dim);
+}
+
+.module-meter {
+  flex: 0 0 2px;
+  height: 2px;
+  width: 100%;
+  background: var(--line-soft);
+  overflow: hidden;
+}
+
+.module-meter-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--sw, var(--ok));
+  transition: width 140ms ease;
 }
 
 .module-bar-actions {
@@ -1328,6 +1510,22 @@ select:focus {
   padding: 1px 5px;
   border-radius: 3px;
   border: 1px solid color-mix(in srgb, var(--open) 28%, transparent);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+.osc-slice-stats {
+  position: absolute;
+  right: 9px;
+  bottom: 7px;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  color: var(--dim);
+  background: color-mix(in srgb, var(--bg) 78%, transparent);
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid var(--line-soft);
+  font-variant-numeric: tabular-nums;
   pointer-events: none;
 }
 
@@ -1698,8 +1896,9 @@ select:focus {
   transition: border-color 100ms ease, background 100ms ease, box-shadow 100ms ease;
 }
 
-.slot:hover:not(:disabled) {
-  border-color: var(--line-hi);
+.slot:hover:not(:disabled),
+.slot.is-hover {
+  border-color: color-mix(in srgb, var(--open) 65%, var(--line-hi));
   background: var(--panel-hi);
 }
 

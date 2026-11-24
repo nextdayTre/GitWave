@@ -6,8 +6,10 @@ import {
   cycleTheme,
   defaultModules,
   defaultView,
+  endMsAtWtPos,
   endMsOf,
   expandModule,
+  historyRange,
   nudgeEnd,
   pinModule,
   removeModule,
@@ -17,7 +19,9 @@ import {
   stopsFor,
   toggleLens,
   validateView,
+  viewAtWtPos,
   withEnd,
+  wtPosOf,
   focusCommitView,
   focusFirstMatch,
   focusRefView,
@@ -349,4 +353,31 @@ test("view: the transport sweeps, bounces and stops", () => {
   const mid = withEnd(model, base, isoOf(model.snapshotMs - 5 * window.slotMs));
   const step = transportStep(model, mid, 1);
   assert.equal(endMsOf(step.view) - endMsOf(mid), window.slotMs);
+});
+
+test("view: WT POS couples directly to read-head time travel", () => {
+  const { model } = loadDemo();
+  const base = {
+    ...defaultView(model),
+    motion: { playing: true, mode: "sweep" as const, rate: 4 },
+  };
+  const range = historyRange(model, "90d");
+  assert.ok(range.maxEnd > range.minEnd);
+  assert.equal(wtPosOf(model, base), 1);
+
+  const oldest = viewAtWtPos(model, base, 0, null, true);
+  assert.equal(endMsOf(oldest), range.minEnd);
+  assert.equal(wtPosOf(model, oldest), 0);
+  assert.equal(oldest.motion.playing, false, "interactive scrub pauses LFO");
+  assert.ok(oldest.focusSha, "scrubbing into past focuses a commit inside that window");
+  const focusCommit = model.commitBySha.get(oldest.focusSha!);
+  assert.ok(focusCommit);
+  const oldWin = windowFor(model, oldest.end, oldest.span);
+  const t = Date.parse(focusCommit.time);
+  assert.ok(t >= oldWin.startMs && t <= oldWin.endMs);
+
+  const mid = viewAtWtPos(model, base, 0.5);
+  assert.ok(Math.abs(wtPosOf(model, mid) - 0.5) < 0.005);
+  assert.equal(endMsAtWtPos(model, "90d", 1), model.snapshotMs);
+  assert.equal(wtPosOf(model, { ...base, span: "all" }), 1);
 });

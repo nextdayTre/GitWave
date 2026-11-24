@@ -13,11 +13,27 @@
  * Pure 2D canvas, cached wavetable synthesis, zero libraries, zero hex literals.
  */
 
-import { ctx, getOscParams } from "../app.ts";
-import { clamp, dateShort, effectiveCeiling, isoOf } from "../core/samples.ts";
+import { ctx, getOscParams, setView } from "../app.ts";
+import { slotAtX, slotGeometry, slotX } from "../core/geometry.ts";
+import { mergeMarkers } from "../core/refs.ts";
+import {
+  SLOT_COUNT,
+  clamp,
+  dateFull,
+  dateMedium,
+  dateShort,
+  effectiveCeiling,
+  isoOf,
+  refTipTime,
+  slotIndexForTime,
+  windowFor,
+} from "../core/samples.ts";
 import { searchCommits } from "../core/search.ts";
+import { buildSpline, evalSpline } from "../core/spline.ts";
 import { mixHex, rgba } from "../core/theme.ts";
+import { focusSlot, historyRange, wtPosOf } from "../core/view.ts";
 import { buildWavetable, sampleWavetableSlice } from "../core/wavetable.ts";
+import { shortSha } from "../ui/dom.js";
 
 const MONO = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
 const SWEEP_RATE = 0.085;
@@ -27,10 +43,44 @@ const BREATH_RATE = 1.15;
 const tableCache = new Map();
 const MAX_CACHE = 48;
 
-function getCachedTable(model, view, shas, ceiling, sliceCount, sampleCount, smooth, seed) {
+export function formatChurn(n) {
+  if (n >= 10000) return `${(n / 1000).toFixed(1)}k`;
+  if (n >= 1000) return `${(n / 1000).toFixed(2)}k`;
+  return String(Math.round(n));
+}
+
+/**
+ * Live normalized WT POS [0..1] coupled directly to the repo read head (`view.end`),
+ * with smooth sub-slot interpolation while the LFO transport is playing.
+ * 0 = oldest travelable window for the span, 1 = latest snapshot (`now`).
+ */
+export function liveWtPos() {
+  if (!ctx.model || !ctx.view) return 1;
+  const { minEnd, maxEnd } = historyRange(ctx.model, ctx.view.span);
+  if (maxEnd <= minEnd) return 1;
+  const baseEnd = ctx.window ? ctx.window.endMs : windowFor(ctx.model, ctx.view.end, ctx.view.span).endMs;
+  if (ctx.view.motion.playing && ctx.window && ctx.window.slotMs > 0) {
+    const smoothEnd = clamp(
+      baseEnd + (ctx.lfoDir || 1) * clamp(ctx.depthPhase, 0, 1) * ctx.window.slotMs,
+      minEnd,
+      maxEnd
+    );
+    return clamp((smoothEnd - minEnd) / (maxEnd - minEnd), 0, 1);
+  }
+  return wtPosOf(ctx.model, ctx.view);
+}
+
+/** Live read-head timestamp (ms) matching `liveWtPos()`. */
+export function liveReadHeadMs() {
+  if (!ctx.model || !ctx.view) return 0;
+  const { minEnd, maxEnd } = historyRange(ctx.model, ctx.view.span);
+  return Math.round(minEnd + liveWtPos() * (maxEnd - minEnd));
+}
+
+function getCachedTable(model, view, shas, ceiling, sliceCount, sampleCount, smooth, seed, fullHistory = true) {
   const key = [
     model.doc.repo.id,
-    view.end,
+    fullHistory ? "hist" : view.end,
     view.span,
     seed,
     ceiling,
@@ -46,6 +96,7 @@ function getCachedTable(model, view, shas, ceiling, sliceCount, sampleCount, smo
     sampleCount,
     smooth,
     seed,
+    fullHistory,
   });
   if (tableCache.size >= MAX_CACHE) {
     const oldest = tableCache.keys().next().value;
@@ -355,6 +406,35 @@ function paintWavetable3D(g, table, proj, P, opts) {
       else g.lineTo(activePts[s].x, activePts[s].y);
     }
     g.stroke();
+
+    /* Cross-linked 3D slot cursor when hovering/focusing a peak on the 2D scope or strip */
+    const markerSlot = opts.markerSlot ?? -1;
+    if (isStage && markerSlot >= 0 && markerSlot < SLOT_COUNT) {
+      const idx = Math.round((markerSlot / (SLOT_COUNT - 1)) * (S - 1));
+      const mp = activePts[idx];
+      const mb = activeBase[idx];
+      if (mp && mb) {
+        g.strokeStyle = rgba(P.handle, 0.55);
+        g.lineWidth = 1;
+        g.setLineDash([2, 2]);
+        g.beginPath();
+        g.moveTo(mb.x, mb.y);
+        g.lineTo(mp.x, mp.y);
+        g.stroke();
+        g.setLineDash([]);
+
+        g.fillStyle = P.handle;
+        g.beginPath();
+        g.arc(mp.x, mp.y, 4.2, 0, Math.PI * 2);
+        g.fill();
+
+        g.strokeStyle = playheadColor;
+        g.lineWidth = 1.6;
+        g.beginPath();
+        g.arc(mp.x, mp.y, 7.5, 0, Math.PI * 2);
+        g.stroke();
+      }
+    }
     g.restore();
   };
 
@@ -468,16 +548,19 @@ function paintWavetable3D(g, table, proj, P, opts) {
 
 /**
  * Hero Stage 3D renderer (Warpenter-inspired full volumetric wavetable + orbit).
+ * Anchored to the full repository history for the span; the glowing amber
+ * playhead slice is directly coupled to the real Git read head (`view.end`).
  */
 export function drawDepth() {
   const canvas = document.getElementById("wave");
   if (!canvas || !ctx.view || !ctx.model || !ctx.palette || !ctx.window || !ctx.metric) return;
   const { g, width: w, height: h } = fit(canvas);
   const P = ctx.palette;
-  const view = smoothView(ctx.view);
+  const view = ctx.view;
   const model = ctx.model;
   const shas = ctx.search.shas;
-  const ceiling = ctx.metric.ceiling;
+  const frontWin = windowFor(model, model.doc.repo.snapshotAt, view.span);
+  const stableCeiling = effectiveCeiling(model, frontWin, shas);
   const frontColor = ctx.metric.color;
   const sp = ctx.stageParams;
 
@@ -485,11 +568,12 @@ export function drawDepth() {
     model,
     view,
     shas,
-    ceiling,
+    stableCeiling,
     56,
     112,
     sp.smooth,
-    ctx.view.query || ctx.metric.label
+    ctx.view.query || ctx.metric.label,
+    true
   );
 
   /* Smooth damped camera orbit */
@@ -497,7 +581,9 @@ export function drawDepth() {
   ctx.camera.pitch += (ctx.camera.targetPitch - ctx.camera.pitch) * 0.14;
 
   const morph = ctx.morph ?? 0;
-  const playheadPos = sp.pos !== null ? sp.pos : ((morph * SWEEP_RATE) % 1 + 1) % 1;
+  const wtPos = liveWtPos();
+  /* z = 0 is front (newest / now), z = 1 is back (oldest) */
+  const playheadZ = 1 - wtPos;
   const breathPhase = morph * BREATH_RATE;
 
   g.clearRect(0, 0, w, h);
@@ -530,43 +616,60 @@ export function drawDepth() {
 
   drawWireCage(g, proj, P, frontColor, 1);
 
+  /* Highlight hovered or focused slot along the 3D playhead slice */
+  const focusK =
+    ctx.focusCommit && ctx.window
+      ? slotIndexForTime(ctx.window, Date.parse(ctx.focusCommit.time))
+      : -1;
+  const markerSlot = ctx.hoverSlot >= 0 ? ctx.hoverSlot : focusK;
+
   const res = paintWavetable3D(g, table, proj, P, {
     frontColor,
     backColor: P.depth,
     playheadColor: P.open,
-    playheadPos,
+    playheadPos: playheadZ,
     showPlayhead: true,
     breathPhase,
-    breathAmp: 0.022,
+    breathAmp: 0.016,
     mode: "stage",
+    markerSlot,
   });
 
-  /* Publish active slice to ctx so the Paired 2D Scope renders the exact same frame */
-  if (res) {
-    ctx.activeSliceWave = res.activeSliceValues;
-    ctx.activeSliceZ = res.activeZ;
-    const metaIdx = Math.min(table.meta.length - 1, Math.round(res.activeZ * (table.meta.length - 1)));
-    const m = table.meta[metaIdx];
-    ctx.activeSliceCount = m ? m.commitCount : 0;
-    ctx.activeSliceDate = m ? dateShort(m.endMs) : "";
+  /* Compute exact live Git totals for the current read-head window */
+  let winCommits = 0;
+  let winChurn = 0;
+  for (const s of ctx.slots) {
+    winCommits += s.count;
+    winChurn += s.churn;
   }
 
-  /* Subtle corner telemetry inside the 3D stage */
+  ctx.activeWtPos = wtPos;
+  ctx.activeSliceZ = playheadZ;
+  ctx.activeSliceCount = winCommits;
+  ctx.activeSliceChurn = winChurn;
+  ctx.activeSliceDate = dateFull(liveReadHeadMs());
+  if (res) {
+    ctx.activeSliceWave = res.activeSliceValues;
+  }
+
+  /* Truthful corner telemetry coupled to the read head */
   g.save();
   g.font = `10px ${MONO}`;
   g.textAlign = "right";
   g.textBaseline = "top";
-  g.fillStyle = rgba(P.open, 0.85);
-  const sliceNum = Math.round(playheadPos * (table.sliceCount - 1)) + 1;
+  g.fillStyle = rgba(P.open, 0.92);
+  const scanTag = view.motion.playing ? " · LFO" : "";
   g.fillText(
-    `FRAME ${String(sliceNum).padStart(2, "0")}/${table.sliceCount} · POS ${Math.round(playheadPos * 100)}%`,
+    `WT POS ${Math.round(wtPos * 100)}% · ${ctx.activeSliceDate} UTC${scanTag}`,
     w - 18,
     14
   );
-  if (ctx.activeSliceDate) {
-    g.fillStyle = rgba(P.dim, 0.85);
-    g.fillText(`${ctx.activeSliceDate} UTC · ${ctx.activeSliceCount} commits`, w - 18, 29);
-  }
+  g.fillStyle = rgba(P.dim, 0.9);
+  g.fillText(
+    `${winCommits} commits · ${formatChurn(winChurn)} churn · ${view.span} window`,
+    w - 18,
+    29
+  );
   g.restore();
 
   /* Search scan sweep pulse */
@@ -602,116 +705,433 @@ export function drawDepth() {
     g.restore();
   }
 
-  /* Sync paired 2D oscilloscope immediately */
+  /* Sync paired interactive 2D commit scope immediately */
   drawActiveScope();
 }
 
+let scopePointerActive = false;
+
+function updateScopeTooltip(k, canvasW) {
+  const tip = document.getElementById("scopeTooltip");
+  if (!tip) return;
+  if (!scopePointerActive || k < 0 || k >= ctx.slots.length || !ctx.window) {
+    tip.hidden = true;
+    return;
+  }
+  const slot = ctx.slots[k];
+  const dateEl = document.getElementById("scopeTipDate");
+  const statsEl = document.getElementById("scopeTipStats");
+  const shaEl = document.getElementById("scopeTipSha");
+  const authorEl = document.getElementById("scopeTipAuthor");
+  const subjectEl = document.getElementById("scopeTipSubject");
+  if (!dateEl || !statsEl || !shaEl || !authorEl || !subjectEl) return;
+
+  dateEl.textContent = `${dateMedium(slot.startMs)} – ${dateMedium(slot.endMs)}`;
+  if (slot.count === 0) {
+    statsEl.textContent = "quiet slot";
+    shaEl.textContent = "—";
+    authorEl.textContent = "";
+    subjectEl.textContent = "no matching commits in this slice";
+  } else {
+    const c = slot.newest;
+    let ins = 0;
+    let del = 0;
+    for (const item of slot.commits) {
+      ins += item.insertions;
+      del += item.deletions;
+    }
+    statsEl.textContent = `${slot.count} commit${slot.count === 1 ? "" : "s"} · +${ins} −${del}`;
+    shaEl.textContent = c ? shortSha(c.sha, 7) : "—";
+    authorEl.textContent = c
+      ? `${c.author.name}${c.author.kind === "agent" ? " ◈" : ""}${
+          slot.count > 1 ? ` (+${slot.count - 1} more)` : ""
+        }`
+      : "";
+    subjectEl.textContent = c ? c.subject : "";
+  }
+
+  const geom = slotGeometry(canvasW, SLOT_COUNT);
+  const sx = slotX(k, geom);
+  const preferLeft = sx > canvasW * 0.62;
+  tip.hidden = false;
+  tip.style.left = preferLeft ? "" : `${Math.min(canvasW - 240, Math.max(12, sx + 12))}px`;
+  tip.style.right = preferLeft ? `${Math.min(canvasW - 240, Math.max(12, canvasW - sx + 12))}px` : "";
+}
+
 /**
- * Paired 2D Active Slice Oscilloscope (Warpenter + Ref #3 style).
- * Drawn directly beneath the Hero 3D stage, synced 1:1 to the travelling playhead.
+ * Interactive 2D Active Slice Commit Scope (Stage mode).
+ * Drawn directly beneath the Hero 3D stage and aligned 1:1 with the 32-slot
+ * overview strip below it. Renders the real monotone commit-churn curve at
+ * the active WT POS timestamp with clickable commit peaks, agent halos,
+ * merge diamonds, open PR rings and hover inspection tooltips.
  */
 export function drawActiveScope() {
   const canvas = document.getElementById("scope2d");
-  if (!canvas || canvas.offsetParent === null || !ctx.palette || !ctx.metric) return;
+  if (!canvas || canvas.offsetParent === null || !ctx.palette || !ctx.metric || !ctx.window) return;
   const { g, width: w, height: h } = fit(canvas);
   const P = ctx.palette;
-  const wave = ctx.activeSliceWave;
+  const slots = ctx.slots;
+  if (!slots || slots.length !== SLOT_COUNT) return;
+
   const accent = ctx.metric.color;
-  const padX = 20;
-  const padY = 16;
-  const midY = h * 0.5;
-  const amp = (h - padY * 2) * 0.44;
-  const plotW = Math.max(10, w - padX * 2);
+  const geom = slotGeometry(w, SLOT_COUNT);
+  const topPad = 24;
+  const botPad = 14;
+  const plotH = Math.max(24, h - topPad - botPad);
+  /* Baseline sits at 74% height so true peaks rise cleanly upward and a subtle 26% phosphor echo mirrors underneath */
+  const baseY = topPad + plotH * 0.74;
+  const upAmp = plotH * 0.7;
+  const downAmp = plotH * 0.22;
+
+  const xs = new Array(SLOT_COUNT);
+  const ys = new Array(SLOT_COUNT);
+  const mirrorYs = new Array(SLOT_COUNT);
+  for (let k = 0; k < SLOT_COUNT; k++) {
+    const norm = slots[k].level / 15;
+    xs[k] = slotX(k, geom);
+    ys[k] = baseY - norm * upAmp;
+    mirrorYs[k] = baseY + norm * downAmp;
+  }
+  const spline = buildSpline(xs, ys);
+  const mirrorSpline = buildSpline(xs, mirrorYs);
 
   g.clearRect(0, 0, w, h);
   g.fillStyle = P.bg;
   g.fillRect(0, 0, w, h);
 
-  /* Delicate oscilloscope graticule */
+  /* Delicate oscilloscope graticule aligned to 4-slot intervals */
   g.save();
   g.strokeStyle = rgba(P.lineSoft, 0.9);
   g.lineWidth = 1;
-  for (let i = 1; i < 8; i++) {
-    const gx = padX + (plotW * i) / 8;
+  for (let k = 4; k < SLOT_COUNT; k += 4) {
+    const gx = xs[k];
     g.beginPath();
-    g.moveTo(gx, padY * 0.6);
-    g.lineTo(gx, h - padY * 0.6);
+    g.moveTo(gx, topPad - 4);
+    g.lineTo(gx, h - botPad + 4);
     g.stroke();
   }
-  g.strokeStyle = rgba(P.line, 0.85);
+  /* Subtle upper half-scale guide + solid zero rail */
+  g.strokeStyle = rgba(P.lineSoft, 0.6);
+  g.setLineDash([2, 4]);
   g.beginPath();
-  g.moveTo(padX, midY);
-  g.lineTo(w - padX, midY);
+  g.moveTo(geom.pad, baseY - upAmp * 0.5);
+  g.lineTo(w - geom.pad, baseY - upAmp * 0.5);
+  g.stroke();
+  g.setLineDash([]);
+
+  g.strokeStyle = rgba(P.lineHi, 0.72);
+  g.beginPath();
+  g.moveTo(geom.pad, baseY);
+  g.lineTo(w - geom.pad, baseY);
   g.stroke();
   g.restore();
 
-  if (!wave || wave.length < 2) return;
+  /* Sample smooth monotone spline across plot width */
+  if (spline && mirrorSpline) {
+    const x0 = xs[0];
+    const x1 = xs[SLOT_COUNT - 1];
+    const steps = Math.max(96, Math.min(240, Math.round((x1 - x0) / 3)));
 
-  /* Soft translucent fill between waveform and zero centerline */
-  const grad = g.createLinearGradient(0, padY, 0, h - padY);
-  grad.addColorStop(0, rgba(accent, 0.16));
-  grad.addColorStop(0.5, rgba(accent, 0.02));
-  grad.addColorStop(1, rgba(accent, 0.16));
+    /* Translucent upper fill */
+    const upGrad = g.createLinearGradient(0, baseY - upAmp, 0, baseY);
+    upGrad.addColorStop(0, rgba(accent, 0.28));
+    upGrad.addColorStop(1, rgba(accent, 0.03));
 
+    g.save();
+    g.beginPath();
+    g.moveTo(x0, baseY);
+    for (let i = 0; i <= steps; i++) {
+      const px = x0 + ((x1 - x0) * i) / steps;
+      g.lineTo(px, evalSpline(spline, px));
+    }
+    g.lineTo(x1, baseY);
+    g.closePath();
+    g.fillStyle = upGrad;
+    g.fill();
+
+    /* Subtle mirrored phosphor reflection below zero rail */
+    const downGrad = g.createLinearGradient(0, baseY, 0, baseY + downAmp);
+    downGrad.addColorStop(0, rgba(accent, 0.14));
+    downGrad.addColorStop(1, rgba(accent, 0.01));
+    g.beginPath();
+    g.moveTo(x0, baseY);
+    for (let i = 0; i <= steps; i++) {
+      const px = x0 + ((x1 - x0) * i) / steps;
+      g.lineTo(px, evalSpline(mirrorSpline, px));
+    }
+    g.lineTo(x1, baseY);
+    g.closePath();
+    g.fillStyle = downGrad;
+    g.fill();
+
+    /* Faint mirrored trace */
+    g.strokeStyle = rgba(accent, 0.26);
+    g.lineWidth = 1;
+    g.beginPath();
+    for (let i = 0; i <= steps; i++) {
+      const px = x0 + ((x1 - x0) * i) / steps;
+      const py = evalSpline(mirrorSpline, px);
+      if (i === 0) g.moveTo(px, py);
+      else g.lineTo(px, py);
+    }
+    g.stroke();
+
+    /* Outer phosphor glow on real commit curve */
+    g.lineJoin = "round";
+    g.lineCap = "round";
+    g.globalCompositeOperation = "lighter";
+    g.strokeStyle = rgba(accent, 0.28);
+    g.lineWidth = 6.5;
+    g.beginPath();
+    for (let i = 0; i <= steps; i++) {
+      const px = x0 + ((x1 - x0) * i) / steps;
+      const py = evalSpline(spline, px);
+      if (i === 0) g.moveTo(px, py);
+      else g.lineTo(px, py);
+    }
+    g.stroke();
+
+    /* Primary truthful monotone curve */
+    g.globalCompositeOperation = "source-over";
+    g.strokeStyle = mixHex(accent, P.handle, 0.22);
+    g.lineWidth = 1.9;
+    g.beginPath();
+    for (let i = 0; i <= steps; i++) {
+      const px = x0 + ((x1 - x0) * i) / steps;
+      const py = evalSpline(spline, px);
+      if (i === 0) g.moveTo(px, py);
+      else g.lineTo(px, py);
+    }
+    g.stroke();
+
+    /* Bright core filament */
+    g.strokeStyle = rgba(P.handle, 0.65);
+    g.lineWidth = 0.7;
+    g.stroke();
+    g.restore();
+  }
+
+  /* Merge diamonds along active curve */
+  if (ctx.model) {
+    const merges = mergeMarkers(ctx.model, ctx.window.startMs, ctx.window.endMs);
+    if (merges.length) {
+      g.save();
+      g.strokeStyle = P.okHi;
+      g.fillStyle = rgba(P.okHi, 0.22);
+      g.lineWidth = 1.2;
+      for (const m of merges) {
+        const mk = slotIndexForTime(ctx.window, Date.parse(m.commit.time));
+        const mx = xs[mk];
+        const my = ys[mk];
+        const r = 4.2;
+        g.beginPath();
+        g.moveTo(mx, my - r);
+        g.lineTo(mx + r, my);
+        g.lineTo(mx, my + r);
+        g.lineTo(mx - r, my);
+        g.closePath();
+        g.fill();
+        g.stroke();
+      }
+      g.restore();
+    }
+  }
+
+  /* Open PR tip markers in the active window */
+  if (ctx.model && ctx.prs?.length) {
+    g.save();
+    for (const pr of ctx.prs) {
+      const tipMs = refTipTime(ctx.model, pr.ref);
+      if (tipMs < ctx.window.startMs || tipMs > ctx.window.endMs) continue;
+      const pk = slotIndexForTime(ctx.window, tipMs);
+      const px = xs[pk];
+      const py = ys[pk];
+      const col = pr.stale ? P.risk : P.open;
+      g.strokeStyle = col;
+      g.lineWidth = 1.4;
+      g.beginPath();
+      g.arc(px, py, 6.2, 0, Math.PI * 2);
+      g.stroke();
+    }
+    g.restore();
+  }
+
+  /* Focused slot index */
+  const focusK =
+    ctx.focusCommit &&
+    Date.parse(ctx.focusCommit.time) >= ctx.window.startMs &&
+    Date.parse(ctx.focusCommit.time) <= ctx.window.endMs
+      ? slotIndexForTime(ctx.window, Date.parse(ctx.focusCommit.time))
+      : -1;
+
+  /* Interactive commit peak nodes on every non-empty slot */
   g.save();
-  g.beginPath();
-  for (let s = 0; s < wave.length; s++) {
-    const x = padX + (s / (wave.length - 1)) * plotW;
-    const y = midY - wave[s] * amp;
-    if (s === 0) g.moveTo(x, y);
-    else g.lineTo(x, y);
-  }
-  g.lineTo(padX + plotW, midY);
-  g.lineTo(padX, midY);
-  g.closePath();
-  g.fillStyle = grad;
-  g.fill();
+  for (let k = 0; k < SLOT_COUNT; k++) {
+    const slot = slots[k];
+    if (slot.count === 0) continue;
+    const px = xs[k];
+    const py = ys[k];
+    const r = Math.min(4.6, 2.4 + Math.log2(1 + slot.count) * 0.9);
 
-  /* Outer phosphor glow */
-  g.lineJoin = "round";
-  g.lineCap = "round";
-  g.globalCompositeOperation = "lighter";
-  g.strokeStyle = rgba(accent, 0.25);
-  g.lineWidth = 7;
-  g.beginPath();
-  for (let s = 0; s < wave.length; s++) {
-    const x = padX + (s / (wave.length - 1)) * plotW;
-    const y = midY - wave[s] * amp;
-    if (s === 0) g.moveTo(x, y);
-    else g.lineTo(x, y);
-  }
-  g.stroke();
+    if (slot.agentCount > 0) {
+      g.strokeStyle = rgba(P.agent, 0.85);
+      g.lineWidth = 1.4;
+      g.beginPath();
+      g.arc(px, py, r + 2.6, 0, Math.PI * 2);
+      g.stroke();
+    }
 
-  /* Crisp primary oscilloscope trace */
-  g.globalCompositeOperation = "source-over";
-  g.strokeStyle = mixHex(accent, P.handle, 0.22);
-  g.lineWidth = 1.8;
-  g.beginPath();
-  for (let s = 0; s < wave.length; s++) {
-    const x = padX + (s / (wave.length - 1)) * plotW;
-    const y = midY - wave[s] * amp;
-    if (s === 0) g.moveTo(x, y);
-    else g.lineTo(x, y);
+    g.fillStyle = k === focusK ? P.handle : mixHex(accent, P.handle, 0.35);
+    g.beginPath();
+    g.arc(px, py, r, 0, Math.PI * 2);
+    g.fill();
   }
-  g.stroke();
 
-  /* Bright center filament */
-  g.strokeStyle = rgba(P.handle, 0.7);
-  g.lineWidth = 0.7;
-  g.stroke();
+  /* Focused slot reticle */
+  if (focusK >= 0 && slots[focusK].count > 0) {
+    const fx = xs[focusK];
+    const fy = ys[focusK];
+    g.strokeStyle = rgba(P.handle, 0.35);
+    g.lineWidth = 1;
+    g.beginPath();
+    g.moveTo(fx, topPad);
+    g.lineTo(fx, h - botPad);
+    g.stroke();
+
+    g.strokeStyle = P.handle;
+    g.lineWidth = 1.6;
+    g.beginPath();
+    g.arc(fx, fy, 7.2, 0, Math.PI * 2);
+    g.stroke();
+  }
+
+  /* Hovered slot crosshair & highlight ring */
+  const hk = ctx.hoverSlot;
+  if (hk >= 0 && hk < SLOT_COUNT) {
+    const hx = xs[hk];
+    const hy = ys[hk];
+    g.fillStyle = rgba(P.open, 0.06);
+    g.fillRect(hx - geom.cell * 0.5, topPad - 2, geom.cell, plotH + 4);
+
+    g.strokeStyle = rgba(P.open, 0.72);
+    g.lineWidth = 1;
+    g.setLineDash([2, 2]);
+    g.beginPath();
+    g.moveTo(hx, topPad - 2);
+    g.lineTo(hx, h - botPad + 2);
+    g.stroke();
+    g.setLineDash([]);
+
+    g.strokeStyle = P.open;
+    g.lineWidth = 1.8;
+    g.beginPath();
+    g.arc(hx, hy, slots[hk].count > 0 ? 8.2 : 4.5, 0, Math.PI * 2);
+    g.stroke();
+  }
   g.restore();
 
-  /* Minimal corner scope labels */
+  /* Top corner scope telemetry */
   g.save();
   g.font = `9.5px ${MONO}`;
   g.textAlign = "left";
   g.textBaseline = "top";
-  g.fillStyle = rgba(P.dim, 0.9);
-  g.fillText(`2D ACTIVE SLICE · ${ctx.metric.label.toUpperCase()}`, padX, 7);
+  g.fillStyle = rgba(P.dim, 0.92);
+  g.fillText(
+    `2D COMMIT SCOPE · ${ctx.metric.label.toUpperCase()} · ${dateShort(ctx.window.startMs)} – ${dateShort(ctx.window.endMs)} UTC`,
+    geom.pad,
+    6
+  );
   g.textAlign = "right";
-  g.fillStyle = rgba(P.open, 0.9);
-  g.fillText(`WT POS ${Math.round(ctx.activeSliceZ * 100)}%`, w - padX, 7);
+  g.fillStyle = rgba(P.open, 0.92);
+  g.fillText(
+    `WT POS ${Math.round(liveWtPos() * 100)}% · ${ctx.activeSliceCount} COMMITS · ${formatChurn(ctx.activeSliceChurn)} CHURN`,
+    w - geom.pad,
+    6
+  );
   g.restore();
+
+  if (scopePointerActive) {
+    updateScopeTooltip(ctx.hoverSlot, w);
+  }
+}
+
+/** Wire interactive hover tooltips and click/scrub commit inspection on the 2D scope. */
+export function initScope2d() {
+  const canvas = document.getElementById("scope2d");
+  if (!canvas) return;
+  let scrubbing = false;
+
+  const slotAtEvent = (event) => {
+    const rect = canvas.getBoundingClientRect();
+    const geom = slotGeometry(rect.width, SLOT_COUNT);
+    const x = event.clientX - rect.left;
+    return { k: slotAtX(x, geom), width: rect.width };
+  };
+
+  const inspectSlot = (k) => {
+    if (!ctx.view || k < 0 || k >= ctx.slots.length) return;
+    const slot = ctx.slots[k];
+    if (!slot || !slot.newest) return;
+    if (ctx.view.focusSha !== slot.newest.sha) {
+      setView(focusSlot(ctx.view, slot));
+    }
+  };
+
+  const syncStripHover = (k) => {
+    const cells = document.querySelectorAll("#slots .slot.is-hover");
+    for (const c of cells) c.classList.remove("is-hover");
+    if (k >= 0) {
+      const match = document.querySelector(`#slots .slot[data-k="${k}"]`);
+      if (match) match.classList.add("is-hover");
+    }
+  };
+
+  canvas.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    scrubbing = true;
+    scopePointerActive = true;
+    const { k, width } = slotAtEvent(event);
+    ctx.hoverSlot = k;
+    syncStripHover(k);
+    inspectSlot(k);
+    drawDepth();
+    updateScopeTooltip(k, width);
+    try {
+      canvas.setPointerCapture(event.pointerId);
+    } catch {
+      /* non-fatal */
+    }
+  });
+
+  canvas.addEventListener("pointermove", (event) => {
+    scopePointerActive = true;
+    const { k, width } = slotAtEvent(event);
+    if (scrubbing) inspectSlot(k);
+    if (k !== ctx.hoverSlot) {
+      ctx.hoverSlot = k;
+      syncStripHover(k);
+      drawDepth();
+    }
+    updateScopeTooltip(k, width);
+  });
+
+  const endScrub = () => {
+    scrubbing = false;
+  };
+  canvas.addEventListener("pointerup", endScrub);
+  canvas.addEventListener("pointercancel", endScrub);
+
+  canvas.addEventListener("pointerleave", () => {
+    scrubbing = false;
+    scopePointerActive = false;
+    const tip = document.getElementById("scopeTooltip");
+    if (tip) tip.hidden = true;
+    syncStripHover(-1);
+    if (ctx.hoverSlot !== -1) {
+      ctx.hoverSlot = -1;
+      drawDepth();
+    }
+  });
 }
 
 /**
@@ -727,7 +1147,8 @@ export function drawModuleSurface(canvas, module, index = 0, opts = {}) {
 
   const search = searchCommits(model, module.query);
   const shas = search.shas;
-  const ceiling = effectiveCeiling(model, ctx.window, shas);
+  const frontWin = windowFor(model, model.doc.repo.snapshotAt, ctx.view.span);
+  const ceiling = effectiveCeiling(model, frontWin, shas);
   const frontColor =
     opts.color ??
     (isBrowser ? P.ok : P.identity[module.colorKey] ?? P.ok);
@@ -740,23 +1161,24 @@ export function drawModuleSurface(canvas, module, index = 0, opts = {}) {
 
   const table = getCachedTable(
     model,
-    smoothView(ctx.view),
+    ctx.view,
     shas,
     ceiling,
     sliceCount,
     sampleCount,
     smooth,
-    module.query || module.name
+    module.query || module.name,
+    true
   );
 
   const morph = ctx.morph ?? 0;
   const phase = (index % 8) * 0.42;
   const hovered = isBrowser && ctx.browserHoverQuery === module.query;
   const speedMul = hovered ? 2.4 : 1;
-  const playheadPos =
-    !isBrowser && osc.pos !== null
-      ? osc.pos
-      : (((morph * SWEEP_RATE * speedMul + phase * 0.35) % 1) + 1) % 1;
+  const wtPos = isBrowser
+    ? (((morph * SWEEP_RATE * speedMul + phase * 0.35) % 1) + 1) % 1
+    : clamp(opts.wtPos ?? liveWtPos(), 0, 1);
+  const playheadZ = 1 - wtPos;
 
   g.clearRect(0, 0, w, h);
 
@@ -803,15 +1225,15 @@ export function drawModuleSurface(canvas, module, index = 0, opts = {}) {
     frontColor,
     backColor: P.depth,
     playheadColor: P.open,
-    playheadPos,
+    playheadPos: playheadZ,
     showPlayhead: !isBrowser || hovered,
     breathPhase: morph * BREATH_RATE + phase,
-    breathAmp: hovered ? 0.038 : 0.02,
+    breathAmp: hovered ? 0.032 : 0.014,
     mode,
   });
 
   if (!isBrowser && opts.onPosUpdate) {
-    opts.onPosUpdate(playheadPos);
+    opts.onPosUpdate(wtPos);
   }
 
   return search.query ? search.count : model.doc.commits.length;
