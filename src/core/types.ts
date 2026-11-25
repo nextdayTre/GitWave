@@ -156,4 +156,9 @@ export interface Model {
   commitsByRef: Map<string, Commit[]>;
   refsById: Map<string, GitRef>;
   tagsByTime: Tag[];
+  /** Pre-parsed commit timestamps aligned with `doc.commits` (avoids Date.parse in hot loops). */
+  commitTimeMs: Float64Array;
+  commitTimeBySha: Map<string, number>;
+  refTipMs: Map<string, number>;
+  refCreatedMs: Map<string, number>;
 }

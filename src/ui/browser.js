@@ -12,7 +12,7 @@ import { ctx, requestRender, setView } from "../app.ts";
 import { isDesktopRuntime } from "../desktop.ts";
 import { repoContentGroups, searchCommits } from "../core/search.ts";
 import { expandModule, focusFirstMatch, pinModule } from "../core/view.ts";
-import { drawModuleSurface, startDepthScan } from "../render/depth.js";
+import { drawModuleSurface, invalidateCanvasSizes, startDepthScan } from "../render/depth.js";
 import { openFileView, openWorkingTreeDiff } from "./diff.js";
 import { announce } from "./status.ts";
 import { clear, el } from "./dom.js";
@@ -702,6 +702,7 @@ export function renderBrowserGrid() {
   lastBrowserSig = sig;
   clear(host);
   browserTiles = [];
+  invalidateCanvasSizes();
 
   const all = catalogItems(ctx.model);
   const cat = ctx.treeCategory;

@@ -30,6 +30,7 @@ export interface SlotRef {
   count: number;
   churn: number;
   level: number;
+  agentCount: number;
   tip: Commit;
 }
 
@@ -50,6 +51,7 @@ export interface WavePoint {
   k: number;
   level: number;
   count: number;
+  agentCount: number;
   tip: Commit | null;
 }
 
@@ -117,11 +119,17 @@ export function effectiveCeiling(
   shas: Set<string> | null = null
 ): number {
   const sums = new Array<number>(SLOT_COUNT).fill(0);
-  for (const commit of model.doc.commits) {
+  const commits = model.doc.commits;
+  const times = model.commitTimeMs;
+  const startMs = window.startMs;
+  const endMs = window.endMs;
+  for (let i = 0; i < commits.length; i++) {
+    const commit = commits[i];
     if (commit.merge) continue;
+    const t = times ? times[i] : Date.parse(commit.time);
+    if (t < startMs) continue;
+    if (t > endMs) break;
     if (shas && !shas.has(commit.sha)) continue;
-    const t = Date.parse(commit.time);
-    if (t < window.startMs || t > window.endMs) continue;
     sums[slotIndexForTime(window, t)] += commit.insertions + commit.deletions;
   }
   const sorted = sums.sort((a, b) => a - b);
@@ -136,6 +144,8 @@ export function buildSlots(
   ceiling?: number
 ): Slot[] {
   const slots: Slot[] = new Array(SLOT_COUNT);
+  const newestTime = new Float64Array(SLOT_COUNT);
+  newestTime.fill(Number.NEGATIVE_INFINITY);
   for (let k = 0; k < SLOT_COUNT; k++) {
     slots[k] = {
       k,
@@ -150,18 +160,28 @@ export function buildSlots(
       newest: null,
     };
   }
-  for (const commit of model.doc.commits) {
+  const commits = model.doc.commits;
+  const times = model.commitTimeMs;
+  const timeBySha = model.commitTimeBySha;
+  const startMs = window.startMs;
+  const endMs = window.endMs;
+  for (let i = 0; i < commits.length; i++) {
+    const commit = commits[i];
     if (commit.merge) continue;
+    const t = times ? times[i] : Date.parse(commit.time);
+    if (t < startMs) continue;
+    if (t > endMs) break;
     if (shas && !shas.has(commit.sha)) continue;
-    const t = Date.parse(commit.time);
-    if (t < window.startMs || t > window.endMs) continue;
-    const slot = slots[slotIndexForTime(window, t)];
+    const k = slotIndexForTime(window, t);
+    const slot = slots[k];
     const churn = commit.insertions + commit.deletions;
+    const isAgent = commit.author.kind === "agent";
     slot.commits.push(commit);
     slot.count += 1;
     slot.churn += churn;
-    if (commit.author.kind === "agent") slot.agentCount += 1;
-    if (!slot.newest || Date.parse(commit.time) >= Date.parse(slot.newest.time)) {
+    if (isAgent) slot.agentCount += 1;
+    if (t >= newestTime[k]) {
+      newestTime[k] = t;
       slot.newest = commit;
     }
     for (const refId of commit.refs) {
@@ -169,9 +189,18 @@ export function buildSlots(
       if (existing) {
         existing.count += 1;
         existing.churn += churn;
-        if (Date.parse(commit.time) >= Date.parse(existing.tip.time)) existing.tip = commit;
+        if (isAgent) existing.agentCount += 1;
+        const tipT = timeBySha?.get(existing.tip.sha) ?? Date.parse(existing.tip.time);
+        if (t >= tipT) existing.tip = commit;
       } else {
-        slot.byRef.set(refId, { refId, count: 1, churn, level: 0, tip: commit });
+        slot.byRef.set(refId, {
+          refId,
+          count: 1,
+          churn,
+          level: 0,
+          agentCount: isAgent ? 1 : 0,
+          tip: commit,
+        });
       }
     }
   }
@@ -204,7 +233,7 @@ export function refWave(
   slots?: Slot[]
 ): WavePoint[] {
   const tipTime = refTipTime(model, ref);
-  const createdAt = Date.parse(ref.createdAt);
+  const createdAt = model.refCreatedMs?.get(ref.id) ?? Date.parse(ref.createdAt);
   if (tipTime < window.startMs || createdAt > window.endMs) return [];
 
   const first = ref.kind === "trunk" ? 0 : slotIndexForTime(window, Math.max(createdAt, window.startMs));
@@ -219,6 +248,7 @@ export function refWave(
       k,
       level: entry ? entry.level : 0,
       count: entry ? entry.count : 0,
+      agentCount: entry ? entry.agentCount : 0,
       tip: entry ? entry.tip : null,
     });
   }
@@ -226,9 +256,11 @@ export function refWave(
 }
 
 export function refTipTime(model: Model, ref: GitRef): number {
+  const cached = model.refTipMs?.get(ref.id);
+  if (cached !== undefined) return cached;
   const commits = model.commitsByRef.get(ref.id) ?? [];
   const last = commits[commits.length - 1];
-  return last ? Date.parse(last.time) : Date.parse(ref.createdAt);
+  return last ? model.commitTimeBySha?.get(last.sha) ?? Date.parse(last.time) : Date.parse(ref.createdAt);
 }
 
 export function slotStops(model: Model, window: Window): number[] {

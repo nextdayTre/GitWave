@@ -7,6 +7,7 @@ import {
   evaluateAgentSlice,
   evaluateAgentSurface,
   normalizeAgentPatch,
+  sampleAgentSlice,
 } from "../src/core/agent.ts";
 
 test("agent: all formulas and activities produce deterministic values bounded in [-1, 1]", () => {
@@ -84,4 +85,22 @@ test("agent: evaluateAgentSurface produces valid stacked frames and bounded scan
   assert.equal(surface.frames[0].length, 48);
   assert.ok(surface.scanZ >= 0 && surface.scanZ <= 1);
   assert.equal(surface.profile.label, "PUSHING");
+
+  // Reusable framePool produces bit-identical output with zero extra allocation
+  const pool = Array.from({ length: 16 }, () => new Float32Array(48));
+  const pooled = evaluateAgentSurface(cfg, 3.2, 16, 48, pool);
+  assert.equal(pooled.frames, pool);
+  for (let i = 0; i < 16; i++) {
+    assert.deepEqual([...pooled.frames[i]], [...surface.frames[i]]);
+  }
+
+  // Continuous scanZ interpolation matches exact endpoints and blends smoothly mid-slice
+  const front = sampleAgentSlice(surface.frames, 0);
+  const back = sampleAgentSlice(surface.frames, 1);
+  const mid = sampleAgentSlice(surface.frames, 0.5);
+  assert.deepEqual([...front], [...surface.frames[0]]);
+  assert.deepEqual([...back], [...surface.frames[15]]);
+  for (let s = 0; s < 48; s++) {
+    assert.ok(Number.isFinite(mid[s]) && mid[s] >= -1 && mid[s] <= 1);
+  }
 });

@@ -30,7 +30,7 @@ import {
 } from "../core/samples.ts";
 import { searchCommits } from "../core/search.ts";
 import { buildSpline, evalSpline } from "../core/spline.ts";
-import { mixHex, rgba } from "../core/theme.ts";
+import { hexToRgbFast, mixHex, rgba, rgbaMixRgb } from "../core/theme.ts";
 import { focusSlot, historyRange, wtPosOf, endMsAtWtPos } from "../core/view.ts";
 import { buildWavetable, sampleWavetableSlice } from "../core/wavetable.ts";
 import { openDiffView } from "../ui/diff.js";
@@ -44,6 +44,75 @@ const BREATH_RATE = 1.15;
 const tableCache = new Map();
 const MAX_CACHE = 48;
 
+/* Per-frozen-model ceiling cache: avoids scanning all commits every 60fps frame */
+const ceilingCache = new WeakMap();
+
+/* Cached canvas CSS sizes: avoids getBoundingClientRect() layout thrashing inside rAF */
+let canvasSizeEpoch = 1;
+const canvasSizeCache = new WeakMap();
+
+export function invalidateCanvasSizes() {
+  canvasSizeEpoch += 1;
+}
+
+/* Precomputed sin(pi * u) taper arrays per sampleCount */
+const sinPiCache = new Map();
+function getSinPi(S) {
+  let arr = sinPiCache.get(S);
+  if (arr) return arr;
+  arr = new Float32Array(S);
+  const inv = 1 / Math.max(1, S - 1);
+  for (let s = 0; s < S; s++) arr[s] = Math.sin(Math.PI * s * inv);
+  sinPiCache.set(S, arr);
+  return arr;
+}
+
+/* Reusable flat projection scratch buffers (eliminates ~23,000 {x,y,p} allocations/frame) */
+let scratchCap = 0;
+let projX = new Float32Array(0);
+let projY = new Float32Array(0);
+let baseX = new Float32Array(0);
+let baseY = new Float32Array(0);
+let activeX = new Float32Array(0);
+let activeY = new Float32Array(0);
+let activeBaseX = new Float32Array(0);
+let activeBaseY = new Float32Array(0);
+
+function ensureProjectionScratch(total, S) {
+  if (total > scratchCap) {
+    scratchCap = total;
+    projX = new Float32Array(total);
+    projY = new Float32Array(total);
+    baseX = new Float32Array(total);
+    baseY = new Float32Array(total);
+  }
+  if (S > activeX.length) {
+    activeX = new Float32Array(S);
+    activeY = new Float32Array(S);
+    activeBaseX = new Float32Array(S);
+    activeBaseY = new Float32Array(S);
+  }
+}
+
+function getCachedCeiling(model, span, queryKey, shas) {
+  let byKey = ceilingCache.get(model);
+  if (!byKey) {
+    byKey = new Map();
+    ceilingCache.set(model, byKey);
+  }
+  const key = `${span}|${queryKey}`;
+  const hit = byKey.get(key);
+  if (hit !== undefined) return hit;
+  const frontWin = windowFor(model, model.doc.repo.snapshotAt, span);
+  const val = effectiveCeiling(model, frontWin, shas);
+  if (byKey.size >= 128) {
+    const oldest = byKey.keys().next().value;
+    if (oldest !== undefined) byKey.delete(oldest);
+  }
+  byKey.set(key, val);
+  return val;
+}
+
 export function formatChurn(n) {
   if (n >= 10000) return `${(n / 1000).toFixed(1)}k`;
   if (n >= 1000) return `${(n / 1000).toFixed(2)}k`;
@@ -51,24 +120,60 @@ export function formatChurn(n) {
 }
 
 /**
- * Live normalized WT POS [0..1] coupled directly to the repo read head (`view.end`),
+ * Target normalized WT POS [0..1] coupled directly to the repo read head (`view.end`),
  * with smooth sub-slot interpolation while the LFO transport is playing.
  * 0 = oldest travelable window for the span, 1 = latest snapshot (`now`).
  */
-export function liveWtPos() {
+export function targetWtPos() {
   if (!ctx.model || !ctx.view) return 1;
   const { minEnd, maxEnd } = historyRange(ctx.model, ctx.view.span);
   if (maxEnd <= minEnd) return 1;
   const baseEnd = ctx.window ? ctx.window.endMs : windowFor(ctx.model, ctx.view.end, ctx.view.span).endMs;
   if (ctx.view.motion.playing && ctx.window && ctx.window.slotMs > 0) {
-    const smoothEnd = clamp(
-      baseEnd + (ctx.lfoDir || 1) * clamp(ctx.depthPhase, 0, 1) * ctx.window.slotMs,
-      minEnd,
-      maxEnd
-    );
+    const dir = ctx.lfoDir || 1;
+    const phase = clamp(ctx.depthPhase, 0, 1);
+    const delta = dir * phase * ctx.window.slotMs;
+    /* In sweep mode, avoid stalling at maxEnd for a full beat before wrapping */
+    if (ctx.view.motion.mode === "sweep" && dir > 0 && baseEnd >= maxEnd - 1) {
+      return clamp((minEnd + phase * ctx.window.slotMs - minEnd) / (maxEnd - minEnd), 0, 1);
+    }
+    const smoothEnd = clamp(baseEnd + delta, minEnd, maxEnd);
     return clamp((smoothEnd - minEnd) / (maxEnd - minEnd), 0, 1);
   }
   return wtPosOf(ctx.model, ctx.view);
+}
+
+/**
+ * Advance the smoothly damped visual WT POS for fluid glide on jumps & LFO travel.
+ * Snaps instantly on reduced motion, static mode, or sweep wrap-around.
+ */
+export function stepSmoothWtPos(dtSec = 0.0167, instant = false) {
+  const target = targetWtPos();
+  if (instant || ctx.reducedMotion || ctx.smoothWtPos === null || !Number.isFinite(ctx.smoothWtPos)) {
+    ctx.smoothWtPos = target;
+    return target;
+  }
+  const diff = target - ctx.smoothWtPos;
+  /* Snap cleanly on sweep wrap-around or tiny residuals */
+  if (
+    Math.abs(diff) < 0.0004 ||
+    (ctx.view?.motion.playing && ctx.view.motion.mode === "sweep" && Math.abs(diff) > 0.6)
+  ) {
+    ctx.smoothWtPos = target;
+    return target;
+  }
+  const rate = ctx.view?.motion.playing ? 24 : 18;
+  const alpha = 1 - Math.exp(-Math.min(0.1, Math.max(0.001, dtSec)) * rate);
+  ctx.smoothWtPos += diff * alpha;
+  return ctx.smoothWtPos;
+}
+
+/** Live normalized WT POS [0..1] (smoothly damped when animating, exact when static). */
+export function liveWtPos() {
+  if (ctx.smoothWtPos !== null && Number.isFinite(ctx.smoothWtPos)) {
+    return clamp(ctx.smoothWtPos, 0, 1);
+  }
+  return targetWtPos();
 }
 
 /** Live read-head timestamp (ms) matching `liveWtPos()`. */
@@ -107,27 +212,26 @@ function getCachedTable(model, view, shas, ceiling, sliceCount, sampleCount, smo
   return table;
 }
 
-function fit(canvas) {
-  const rect = canvas.getBoundingClientRect();
+function fit(canvas, forceMeasure = false) {
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  const width = Math.max(1, Math.round(rect.width));
-  const height = Math.max(1, Math.round(rect.height));
-  if (canvas.width !== Math.round(width * dpr) || canvas.height !== Math.round(height * dpr)) {
-    canvas.width = Math.round(width * dpr);
-    canvas.height = Math.round(height * dpr);
+  let entry = canvasSizeCache.get(canvas);
+  if (forceMeasure || !entry || entry.epoch !== canvasSizeEpoch || entry.width <= 1 || entry.height <= 1) {
+    const rect = canvas.getBoundingClientRect();
+    const width = Math.max(1, Math.round(rect.width));
+    const height = Math.max(1, Math.round(rect.height));
+    entry = { epoch: canvasSizeEpoch, width, height, dpr };
+    canvasSizeCache.set(canvas, entry);
+  }
+  const { width, height } = entry;
+  const pxW = Math.round(width * dpr);
+  const pxH = Math.round(height * dpr);
+  if (canvas.width !== pxW || canvas.height !== pxH) {
+    canvas.width = pxW;
+    canvas.height = pxH;
   }
   const g = canvas.getContext("2d");
   g.setTransform(dpr, 0, 0, dpr, 0, 0);
   return { g, width, height };
-}
-
-function smoothView(view) {
-  if (!view?.motion.playing || !ctx.window || !ctx.model) return view;
-  const end = Math.min(
-    ctx.model.snapshotMs,
-    ctx.window.endMs + Math.max(0, Math.min(1, ctx.depthPhase)) * ctx.window.slotMs
-  );
-  return { ...view, end: isoOf(end) };
 }
 
 /**
@@ -163,7 +267,7 @@ function makeProjector(w, h, yaw, pitch, opts = {}) {
   const baseY = h * (0.5 + centerYOffset);
   const fov = 5.8;
 
-  return function project(x, y, z) {
+  function project(x, y, z) {
     const ux = x * xStretch;
     const uy = y * yStretch;
     const uz = z * zStretch;
@@ -182,7 +286,9 @@ function makeProjector(w, h, yaw, pitch, opts = {}) {
       y: baseY - screenUp * unitScale * p,
       p,
     };
-  };
+  }
+  project.params = { xStretch, yStretch, zStretch, cy, sy, cp, sp, unitScale, cx, baseY, fov };
+  return project;
 }
 
 /** Draw Warpenter / Serum-style subtle 3D isometric bounding wireframe cage. */
@@ -284,8 +390,11 @@ function drawWireCage(g, proj, P, frontColor, alphaScale = 1) {
 
 /**
  * Core volumetric 3D wavetable painter.
- * Renders back-to-front translucent silk ribbons, slope-lit surface quads,
+ * Renders back-to-front translucent silk ribbons, slope-lit crest highlights,
  * subtle additive luminous mist, bright leading rim, and the active playhead slice.
+ *
+ * Uses flat Float32Array projection buffers and batched per-slice fills (~40x fewer
+ * Canvas draw calls than per-quad fills, zero per-frame object/color-string churn).
  */
 function paintWavetable3D(g, table, proj, P, opts) {
   const {
@@ -306,106 +415,134 @@ function paintWavetable3D(g, table, proj, P, opts) {
   const isBrowser = mode === "browser";
   const isStage = mode === "stage";
   const rimHighlight = mixHex(frontColor, P.handle, isBrowser ? 0.62 : 0.48);
-  const crestLight = mixHex(frontColor, P.handle, 0.32);
+  const crestLight = mixHex(frontColor, P.handle, 0.34);
   const playCore = mixHex(playheadColor, P.handle, 0.58);
 
-  /* Pre-project every slice (curve points + zero-plane anchor points) */
-  const projected = new Array(D);
-  const zeroPlane = new Array(D);
-  const breathScale = 1 + 0.035 * Math.sin(breathPhase);
+  const frontRgb = hexToRgbFast(frontColor);
+  const backRgb = hexToRgbFast(backColor);
+  const rimRgb = hexToRgbFast(rimHighlight);
+  const crestRgb = hexToRgbFast(crestLight);
 
+  ensureProjectionScratch(D * S, S);
+  const sinPi = getSinPi(S);
+  const breathScale = 1 + 0.035 * Math.sin(breathPhase);
+  const { xStretch, yStretch, zStretch, cy, sy, cp, sp, unitScale, cx, baseY: centerY, fov } = proj.params;
+  const invS = 1 / Math.max(1, S - 1);
+  const invD = D > 1 ? 1 / (D - 1) : 0;
+  const doBreath = !table.empty && breathAmp > 0;
+
+  /* Pre-project every slice into flat Float32Arrays (zero heap allocations) */
   for (let i = 0; i < D; i++) {
-    const zNorm = D > 1 ? i / (D - 1) : 0;
+    const zNorm = i * invD;
     const zCoord = -1 + zNorm * 2;
+    const uz = zCoord * zStretch;
+    const uzSy = uz * sy;
+    const uzCy = uz * cy;
     const frame = table.frames[i];
-    const pts = new Array(S);
-    const base = new Array(S);
+    const rowOff = i * S;
+    const zPhase = breathPhase + zNorm * 2.4;
 
     for (let s = 0; s < S; s++) {
-      const u = s / Math.max(1, S - 1);
-      const xCoord = -1 + u * 2;
+      const u = s * invS;
+      const ux = (-1 + u * 2) * xStretch;
+      const rx = ux * cy + uzSy;
+      const rz = -ux * sy + uzCy;
+
       let yVal = frame[s] * breathScale;
-      if (!table.empty && breathAmp > 0) {
-        const win = Math.sin(Math.PI * u);
-        yVal += Math.sin(u * Math.PI * 4 + breathPhase + zNorm * 2.4) * breathAmp * win;
+      if (doBreath) {
+        yVal += Math.sin(u * 12.566370614359172 + zPhase) * breathAmp * sinPi[s];
       }
-      pts[s] = proj(xCoord, yVal, zCoord);
-      base[s] = proj(xCoord, 0, zCoord);
+      const uy = yVal * yStretch;
+      const screenUp = uy * cp + rz * sp;
+      const camDepth = rz * cp - uy * sp;
+      const p = fov / (fov + camDepth > 2.2 ? fov + camDepth : 2.2);
+      const idx = rowOff + s;
+      projX[idx] = cx + rx * unitScale * p;
+      projY[idx] = centerY - screenUp * unitScale * p;
+
+      const baseCam = rz * cp;
+      const pb = fov / (fov + baseCam > 2.2 ? fov + baseCam : 2.2);
+      baseX[idx] = cx + rx * unitScale * pb;
+      baseY[idx] = centerY - rz * sp * unitScale * pb;
     }
-    projected[i] = pts;
-    zeroPlane[i] = base;
   }
 
   /* Project active playhead slice at exact continuous depth playheadPos in [0, 1] */
   const activeZ = clamp(playheadPos, 0, 1);
   const activeSliceValues = sampleWavetableSlice(table, activeZ, breathPhase, breathAmp);
-  const activeZCoord = -1 + activeZ * 2;
-  const activePts = new Array(S);
-  const activeBase = new Array(S);
+  const activeUz = (-1 + activeZ * 2) * zStretch;
+  const aUzSy = activeUz * sy;
+  const aUzCy = activeUz * cy;
   for (let s = 0; s < S; s++) {
-    const u = s / Math.max(1, S - 1);
-    const xCoord = -1 + u * 2;
-    activePts[s] = proj(xCoord, activeSliceValues[s], activeZCoord);
-    activeBase[s] = proj(xCoord, 0, activeZCoord);
+    const ux = (-1 + s * invS * 2) * xStretch;
+    const rx = ux * cy + aUzSy;
+    const rz = -ux * sy + aUzCy;
+
+    const uy = activeSliceValues[s] * yStretch;
+    const screenUp = uy * cp + rz * sp;
+    const camDepth = rz * cp - uy * sp;
+    const p = fov / (fov + camDepth > 2.2 ? fov + camDepth : 2.2);
+    activeX[s] = cx + rx * unitScale * p;
+    activeY[s] = centerY - screenUp * unitScale * p;
+
+    const baseCam = rz * cp;
+    const pb = fov / (fov + baseCam > 2.2 ? fov + baseCam : 2.2);
+    activeBaseX[s] = cx + rx * unitScale * pb;
+    activeBaseY[s] = centerY - rz * sp * unitScale * pb;
   }
   const playheadInsertIdx = Math.round(activeZ * (D - 1));
 
+  /* Interpolated real Git energy at activeZ for subtle dynamic playhead bloom */
+  let activeEnergy = 0.4;
+  if (table.meta && table.meta.length > 0) {
+    const mPos = activeZ * (table.meta.length - 1);
+    const m0 = Math.min(table.meta.length - 1, Math.floor(mPos));
+    const m1 = Math.min(table.meta.length - 1, m0 + 1);
+    const mf = mPos - m0;
+    activeEnergy = table.meta[m0].energy + (table.meta[m1].energy - table.meta[m0].energy) * mf;
+  }
+
   const drawPlayheadSlice = () => {
     if (!showPlayhead) return;
+    const energyBoost = 0.85 + 0.45 * activeEnergy;
     /* Translucent golden curtain between playhead curve and zero-plane */
     g.save();
     g.beginPath();
-    for (let s = 0; s < S; s++) {
-      if (s === 0) g.moveTo(activePts[s].x, activePts[s].y);
-      else g.lineTo(activePts[s].x, activePts[s].y);
-    }
-    for (let s = S - 1; s >= 0; s--) {
-      g.lineTo(activeBase[s].x, activeBase[s].y);
-    }
+    g.moveTo(activeX[0], activeY[0]);
+    for (let s = 1; s < S; s++) g.lineTo(activeX[s], activeY[s]);
+    for (let s = S - 1; s >= 0; s--) g.lineTo(activeBaseX[s], activeBaseY[s]);
     g.closePath();
-    g.fillStyle = rgba(playheadColor, isStage ? 0.16 : 0.14);
+    g.fillStyle = rgba(playheadColor, (isStage ? 0.15 : 0.13) * energyBoost);
     g.fill();
 
     /* Subtle zero-rail highlight underneath the active slice */
     g.strokeStyle = rgba(playheadColor, 0.35);
     g.lineWidth = 0.85;
     g.beginPath();
-    g.moveTo(activeBase[0].x, activeBase[0].y);
-    g.lineTo(activeBase[S - 1].x, activeBase[S - 1].y);
+    g.moveTo(activeBaseX[0], activeBaseY[0]);
+    g.lineTo(activeBaseX[S - 1], activeBaseY[S - 1]);
     g.stroke();
 
-    /* Outer phosphor bloom */
+    /* Outer phosphor bloom (swells subtly over busy commit ridges) */
     g.lineJoin = "round";
     g.lineCap = "round";
     g.globalCompositeOperation = "lighter";
-    g.strokeStyle = rgba(playheadColor, isStage ? 0.28 : 0.24);
-    g.lineWidth = isStage ? 8.5 : 5.5;
+    g.strokeStyle = rgba(playheadColor, (isStage ? 0.26 : 0.22) * energyBoost);
+    g.lineWidth = (isStage ? 8.2 : 5.4) * (0.9 + 0.25 * activeEnergy);
     g.beginPath();
-    for (let s = 0; s < S; s++) {
-      if (s === 0) g.moveTo(activePts[s].x, activePts[s].y);
-      else g.lineTo(activePts[s].x, activePts[s].y);
-    }
+    g.moveTo(activeX[0], activeY[0]);
+    for (let s = 1; s < S; s++) g.lineTo(activeX[s], activeY[s]);
     g.stroke();
 
     /* Main crisp golden/amber trace */
     g.globalCompositeOperation = "source-over";
     g.strokeStyle = playheadColor;
     g.lineWidth = isStage ? 2.2 : 1.75;
-    g.beginPath();
-    for (let s = 0; s < S; s++) {
-      if (s === 0) g.moveTo(activePts[s].x, activePts[s].y);
-      else g.lineTo(activePts[s].x, activePts[s].y);
-    }
     g.stroke();
 
     /* Hot white-gold filament core */
     g.strokeStyle = rgba(playCore, 0.88);
     g.lineWidth = isStage ? 0.9 : 0.7;
-    g.beginPath();
-    for (let s = 0; s < S; s++) {
-      if (s === 0) g.moveTo(activePts[s].x, activePts[s].y);
-      else g.lineTo(activePts[s].x, activePts[s].y);
-    }
     g.stroke();
 
     /* Pulsing yellow selection beacon dot on the 3D waveform (both Stage & Rack) */
@@ -415,9 +552,11 @@ function paintWavetable3D(g, table, proj, P, opts) {
     const markerLabel = opts.markerLabel ?? "";
     if (!isBrowser && markerSlot >= 0 && markerSlot < SLOT_COUNT) {
       const idx = Math.round((markerSlot / (SLOT_COUNT - 1)) * (S - 1));
-      const mp = activePts[idx];
-      const mb = activeBase[idx];
-      if (mp && mb) {
+      const mpx = activeX[idx];
+      const mpy = activeY[idx];
+      const mbx = activeBaseX[idx];
+      const mby = activeBaseY[idx];
+      if (Number.isFinite(mpx) && Number.isFinite(mbx)) {
         const dotYellow = mixHex(playheadColor, P.handle, 0.25);
         const dotCore = mixHex(playheadColor, P.handle, 0.78);
         const baseR = isStage ? 4.8 : 3.9;
@@ -429,22 +568,22 @@ function paintWavetable3D(g, table, proj, P, opts) {
         g.lineWidth = isStage ? 1.2 : 1;
         g.setLineDash([2.5, 2.5]);
         g.beginPath();
-        g.moveTo(mb.x, mb.y);
-        g.lineTo(mp.x, mp.y);
+        g.moveTo(mbx, mby);
+        g.lineTo(mpx, mpy);
         g.stroke();
         g.setLineDash([]);
 
         /* Zero-plane anchor tick */
         g.fillStyle = rgba(playheadColor, markerOwned ? 0.6 : 0.28);
         g.beginPath();
-        g.arc(mb.x, mb.y, isStage ? 2.2 : 1.7, 0, Math.PI * 2);
+        g.arc(mbx, mby, isStage ? 2.2 : 1.7, 0, Math.PI * 2);
         g.fill();
 
         /* Expanding pulsing sonar ring */
         g.strokeStyle = rgba(playheadColor, sonarAlpha);
         g.lineWidth = isStage ? 1.8 : 1.4;
         g.beginPath();
-        g.arc(mp.x, mp.y, sonarR, 0, Math.PI * 2);
+        g.arc(mpx, mpy, sonarR, 0, Math.PI * 2);
         g.stroke();
 
         if (markerOwned) {
@@ -453,14 +592,14 @@ function paintWavetable3D(g, table, proj, P, opts) {
           g.globalCompositeOperation = "lighter";
           g.fillStyle = rgba(playheadColor, 0.36 + 0.24 * (1 - markerPulse));
           g.beginPath();
-          g.arc(mp.x, mp.y, baseR + 4.2 + markerPulse * 2.2, 0, Math.PI * 2);
+          g.arc(mpx, mpy, baseR + 4.2 + markerPulse * 2.2, 0, Math.PI * 2);
           g.fill();
           g.restore();
 
           /* Solid glowing yellow/amber dot + hot pinpoint core */
           g.fillStyle = dotYellow;
           g.beginPath();
-          g.arc(mp.x, mp.y, baseR + 0.4 * Math.sin(markerPulse * Math.PI), 0, Math.PI * 2);
+          g.arc(mpx, mpy, baseR + 0.4 * Math.sin(markerPulse * Math.PI), 0, Math.PI * 2);
           g.fill();
 
           g.strokeStyle = P.bg;
@@ -469,14 +608,14 @@ function paintWavetable3D(g, table, proj, P, opts) {
 
           g.fillStyle = dotCore;
           g.beginPath();
-          g.arc(mp.x, mp.y, baseR * 0.44, 0, Math.PI * 2);
+          g.arc(mpx, mpy, baseR * 0.44, 0, Math.PI * 2);
           g.fill();
         } else {
           /* Hollow time-reference ring for sibling oscillators at this timestamp */
           g.strokeStyle = rgba(dotYellow, 0.85);
           g.lineWidth = 1.6;
           g.beginPath();
-          g.arc(mp.x, mp.y, baseR * 0.9, 0, Math.PI * 2);
+          g.arc(mpx, mpy, baseR * 0.9, 0, Math.PI * 2);
           g.stroke();
         }
 
@@ -487,8 +626,8 @@ function paintWavetable3D(g, table, proj, P, opts) {
           const padX = 5;
           const pillW = tw + padX * 2;
           const pillH = isStage ? 15 : 13;
-          const px = mp.x - pillW * 0.5;
-          const py = mp.y - baseR - pillH - 7;
+          const px = mpx - pillW * 0.5;
+          const py = mpy - baseR - pillH - 7;
           g.fillStyle = rgba(P.bg, 0.86);
           g.strokeStyle = rgba(playheadColor, 0.65);
           g.lineWidth = 0.9;
@@ -500,7 +639,7 @@ function paintWavetable3D(g, table, proj, P, opts) {
           g.fillStyle = dotYellow;
           g.textAlign = "center";
           g.textBaseline = "middle";
-          g.fillText(markerLabel, mp.x, py + pillH * 0.5 + 0.5);
+          g.fillText(markerLabel, mpx, py + pillH * 0.5 + 0.5);
         }
       }
     }
@@ -513,41 +652,67 @@ function paintWavetable3D(g, table, proj, P, opts) {
 
   /* Painter's algorithm: back (D-1) to front (0) */
   let playheadDrawn = false;
-  const quadStep = isBrowser ? 2 : 1;
+  const quadStep = isStage ? 2 : 3;
 
   for (let i = D - 1; i >= 0; i--) {
-    const zNorm = D > 1 ? i / (D - 1) : 0;
+    const zNorm = i * invD;
     const foreWeight = 1 - zNorm;
-    const sliceColor = mixHex(frontColor, backColor, Math.pow(zNorm, 0.85));
-    const pts = projected[i];
-    const base = zeroPlane[i];
+    const zBlend = Math.pow(zNorm, 0.85);
+    const sliceRgb = [
+      frontRgb[0] + (backRgb[0] - frontRgb[0]) * zBlend,
+      frontRgb[1] + (backRgb[1] - frontRgb[1]) * zBlend,
+      frontRgb[2] + (backRgb[2] - frontRgb[2]) * zBlend,
+    ];
+    const rowOff = i * S;
 
-    /* 1. Sculpted translucent surface sheet between slice i and i-1 */
+    /* 1. Continuous translucent surface sheet between slice i and i-1 (1 fill + 1 batched crest pass) */
     if (i > 0 && !table.empty) {
-      const nextPts = projected[i - 1];
+      const nextOff = (i - 1) * S;
       const frameA = table.frames[i];
       const frameB = table.frames[i - 1];
+      const layerEnergy = table.meta?.[i]?.energy ?? 0.45;
       const stripAlphaBase = isBrowser
         ? 0.045 + 0.095 * foreWeight
         : isStage
           ? 0.055 + 0.115 * foreWeight
           : 0.065 + 0.125 * foreWeight;
 
+      /* Pass 1a: seamless full silk ribbon (eliminates 87-111 per-quad fills & anti-alias seams) */
+      g.beginPath();
+      g.moveTo(projX[rowOff], projY[rowOff]);
+      for (let s = 1; s < S; s++) g.lineTo(projX[rowOff + s], projY[rowOff + s]);
+      for (let s = S - 1; s >= 0; s--) g.lineTo(projX[nextOff + s], projY[nextOff + s]);
+      g.closePath();
+      g.fillStyle = rgbaMixRgb(
+        sliceRgb,
+        crestRgb,
+        0.18 * foreWeight,
+        stripAlphaBase * (0.64 + 0.36 * layerEnergy)
+      );
+      g.fill();
+
+      /* Pass 1b: single batched slope-lit crest highlight for sculpted 3D relief */
+      let hasCrest = false;
+      g.beginPath();
       for (let s = 0; s < S - quadStep; s += quadStep) {
-        const s2 = Math.min(S - 1, s + quadStep);
+        const s2 = s + quadStep < S ? s + quadStep : S - 1;
         const hAvg = (frameA[s] + frameA[s2] + frameB[s] + frameB[s2]) * 0.25;
         const slope = (frameB[s] - frameA[s]) * 1.4 + (frameB[s2] - frameB[s]) * 0.8;
-        const shade = clamp(0.45 + hAvg * 0.45 + slope * 0.35, 0, 1);
-        const fillCol = mixHex(sliceColor, crestLight, shade * 0.55);
-        const qAlpha = stripAlphaBase * (0.55 + 0.65 * Math.abs(hAvg));
-
-        g.fillStyle = rgba(fillCol, qAlpha);
-        g.beginPath();
-        g.moveTo(pts[s].x, pts[s].y);
-        g.lineTo(pts[s2].x, pts[s2].y);
-        g.lineTo(nextPts[s2].x, nextPts[s2].y);
-        g.lineTo(nextPts[s].x, nextPts[s].y);
-        g.closePath();
+        if (hAvg * 0.45 + slope * 0.35 > 0.11) {
+          hasCrest = true;
+          const a0 = rowOff + s;
+          const a1 = rowOff + s2;
+          const b0 = nextOff + s;
+          const b1 = nextOff + s2;
+          g.moveTo(projX[a0], projY[a0]);
+          g.lineTo(projX[a1], projY[a1]);
+          g.lineTo(projX[b1], projY[b1]);
+          g.lineTo(projX[b0], projY[b0]);
+          g.closePath();
+        }
+      }
+      if (hasCrest) {
+        g.fillStyle = rgbaMixRgb(sliceRgb, crestRgb, 0.58, stripAlphaBase * 0.42);
         g.fill();
       }
     }
@@ -555,18 +720,14 @@ function paintWavetable3D(g, table, proj, P, opts) {
     /* 2. Soft translucent vertical ribbon curtain (creates Warpenter volumetric mist) */
     if (!table.empty) {
       g.beginPath();
-      for (let s = 0; s < S; s++) {
-        if (s === 0) g.moveTo(pts[s].x, pts[s].y);
-        else g.lineTo(pts[s].x, pts[s].y);
-      }
-      for (let s = S - 1; s >= 0; s--) {
-        g.lineTo(base[s].x, base[s].y);
-      }
+      g.moveTo(projX[rowOff], projY[rowOff]);
+      for (let s = 1; s < S; s++) g.lineTo(projX[rowOff + s], projY[rowOff + s]);
+      for (let s = S - 1; s >= 0; s--) g.lineTo(baseX[rowOff + s], baseY[rowOff + s]);
       g.closePath();
       const curtainAlpha = isBrowser
         ? 0.018 + 0.042 * foreWeight
         : 0.02 + 0.048 * foreWeight;
-      g.fillStyle = rgba(sliceColor, curtainAlpha);
+      g.fillStyle = rgbaMixRgb(sliceRgb, sliceRgb, 0, curtainAlpha);
       g.fill();
     }
 
@@ -576,28 +737,23 @@ function paintWavetable3D(g, table, proj, P, opts) {
         ? 0.94
         : (isBrowser ? 0.1 : 0.08) + (isBrowser ? 0.44 : 0.38) * Math.pow(foreWeight, 1.35);
     g.strokeStyle =
-      i === 0 ? rimHighlight : rgba(mixHex(sliceColor, rimHighlight, foreWeight * 0.35), strokeAlpha);
+      i === 0 ? rimHighlight : rgbaMixRgb(sliceRgb, rimRgb, foreWeight * 0.35, strokeAlpha);
     g.lineWidth = i === 0 ? (isStage ? 1.8 : 1.4) : isStage ? 0.8 : 0.65;
     g.beginPath();
-    for (let s = 0; s < S; s++) {
-      if (s === 0) g.moveTo(pts[s].x, pts[s].y);
-      else g.lineTo(pts[s].x, pts[s].y);
-    }
+    g.moveTo(projX[rowOff], projY[rowOff]);
+    for (let s = 1; s < S; s++) g.lineTo(projX[rowOff + s], projY[rowOff + s]);
     g.stroke();
 
-    /* 4. Ethereal additive glow sheen on every few ridges (Kilohearts/Warpenter luminosity) */
+    /* 4. Ethereal additive glow sheen on every few ridges (reuses current path!) */
     if (!table.empty && (i === 0 || i % 3 === 0)) {
-      g.save();
       g.globalCompositeOperation = "lighter";
-      g.strokeStyle = rgba(i === 0 ? rimHighlight : frontColor, i === 0 ? 0.24 : 0.055 + 0.065 * foreWeight);
+      g.strokeStyle =
+        i === 0
+          ? rgbaMixRgb(rimRgb, rimRgb, 0, 0.24)
+          : rgbaMixRgb(frontRgb, frontRgb, 0, 0.055 + 0.065 * foreWeight);
       g.lineWidth = i === 0 ? (isStage ? 5.5 : 3.8) : isStage ? 2.2 : 1.6;
-      g.beginPath();
-      for (let s = 0; s < S; s++) {
-        if (s === 0) g.moveTo(pts[s].x, pts[s].y);
-        else g.lineTo(pts[s].x, pts[s].y);
-      }
       g.stroke();
-      g.restore();
+      g.globalCompositeOperation = "source-over";
     }
 
     /* 5. Insert active playhead slice cleanly in depth order */
@@ -612,7 +768,7 @@ function paintWavetable3D(g, table, proj, P, opts) {
   }
 
   g.restore();
-  return { activeSliceValues, activeZ };
+  return { activeZ };
 }
 
 /**
@@ -620,7 +776,7 @@ function paintWavetable3D(g, table, proj, P, opts) {
  * Anchored to the full repository history for the span; the glowing amber
  * playhead slice is directly coupled to the real Git read head (`view.end`).
  */
-export function drawDepth() {
+export function drawDepth(forceScope = false) {
   const canvas = document.getElementById("wave");
   if (!canvas || !ctx.view || !ctx.model || !ctx.palette || !ctx.window || !ctx.metric) return;
   const { g, width: w, height: h } = fit(canvas);
@@ -628,8 +784,7 @@ export function drawDepth() {
   const view = ctx.view;
   const model = ctx.model;
   const shas = ctx.search.shas;
-  const frontWin = windowFor(model, model.doc.repo.snapshotAt, view.span);
-  const stableCeiling = effectiveCeiling(model, frontWin, shas);
+  const stableCeiling = getCachedCeiling(model, view.span, view.query, shas);
   const frontColor = ctx.metric.color;
   const sp = ctx.stageParams;
 
@@ -688,7 +843,7 @@ export function drawDepth() {
   /* Highlight hovered or focused slot along the 3D playhead slice with a pulsing yellow dot */
   let focusK = -1;
   if (ctx.focusCommit && ctx.window) {
-    const ft = Date.parse(ctx.focusCommit.time);
+    const ft = model.commitTimeBySha?.get(ctx.focusCommit.sha) ?? Date.parse(ctx.focusCommit.time);
     if (ft >= ctx.window.startMs && ft <= ctx.window.endMs) {
       focusK = slotIndexForTime(ctx.window, ft);
     }
@@ -698,11 +853,12 @@ export function drawDepth() {
   if (ctx.hoverSlot >= 0 && ctx.slots[ctx.hoverSlot]) {
     markerLabel = dateShort(ctx.slots[ctx.hoverSlot].startMs);
   } else if (focusK >= 0 && ctx.focusCommit) {
-    markerLabel = `${dateShort(Date.parse(ctx.focusCommit.time))} · ${shortSha(ctx.focusCommit.sha, 6)}`;
+    const ft = model.commitTimeBySha?.get(ctx.focusCommit.sha) ?? Date.parse(ctx.focusCommit.time);
+    markerLabel = `${dateShort(ft)} · ${shortSha(ctx.focusCommit.sha, 6)}`;
   }
   const markerPulse = 0.5 + 0.5 * Math.sin(morph * 4.4);
 
-  const res = paintWavetable3D(g, table, proj, P, {
+  paintWavetable3D(g, table, proj, P, {
     frontColor,
     backColor: P.depth,
     playheadColor: P.open,
@@ -726,13 +882,9 @@ export function drawDepth() {
   }
 
   ctx.activeWtPos = wtPos;
-  ctx.activeSliceZ = playheadZ;
   ctx.activeSliceCount = winCommits;
   ctx.activeSliceChurn = winChurn;
   ctx.activeSliceDate = dateFull(liveReadHeadMs());
-  if (res) {
-    ctx.activeSliceWave = res.activeSliceValues;
-  }
 
   /* Truthful corner telemetry coupled to the read head */
   g.save();
@@ -787,9 +939,11 @@ export function drawDepth() {
     g.restore();
   }
 
-  /* Sync paired interactive 2D commit scope immediately */
-  drawActiveScope();
+  /* Redraw paired 2D commit scope only when its data, hover, focus, or size actually changed */
+  drawActiveScope(forceScope);
 }
+
+let lastScopeSig = "";
 
 let scopePointerActive = false;
 
@@ -847,10 +1001,30 @@ function updateScopeTooltip(k, canvasW) {
  * the active WT POS timestamp with clickable commit peaks, agent halos,
  * merge diamonds, open PR rings and hover inspection tooltips.
  */
-export function drawActiveScope() {
+export function drawActiveScope(force = false) {
   const canvas = document.getElementById("scope2d");
-  if (!canvas || canvas.offsetParent === null || !ctx.palette || !ctx.metric || !ctx.window) return;
+  if (!canvas || !ctx.palette || !ctx.metric || !ctx.window || !ctx.view) return;
+  if (ctx.diffOpen || ctx.browserOpen || !ctx.view.depth || ctx.view.rack) return;
+  const pct = Math.round(liveWtPos() * 100);
+  const scopeSig = [
+    canvasSizeEpoch,
+    ctx.doc?.repo.id ?? "",
+    ctx.view.theme,
+    ctx.view.query,
+    ctx.window.startMs,
+    ctx.window.endMs,
+    ctx.metric.color,
+    ctx.hoverSlot,
+    ctx.focusCommit?.sha ?? "",
+    pct,
+    ctx.activeSliceCount,
+    ctx.activeSliceChurn,
+  ].join("|");
+  if (!force && scopeSig === lastScopeSig) return;
+  lastScopeSig = scopeSig;
+
   const { g, width: w, height: h } = fit(canvas);
+  if (w < 8 || h < 8) return;
   const P = ctx.palette;
   const slots = ctx.slots;
   if (!slots || slots.length !== SLOT_COUNT) return;
@@ -1236,8 +1410,7 @@ export function drawModuleSurface(canvas, module, index = 0, opts = {}) {
 
   const search = searchCommits(model, module.query);
   const shas = search.shas;
-  const frontWin = windowFor(model, model.doc.repo.snapshotAt, ctx.view.span);
-  const ceiling = effectiveCeiling(model, frontWin, shas);
+  const ceiling = getCachedCeiling(model, ctx.view.span, module.query, shas);
   const frontColor =
     opts.color ??
     (isBrowser ? P.ok : P.identity[module.colorKey] ?? P.ok);

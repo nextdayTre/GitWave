@@ -11,7 +11,6 @@
 
 import { ctx, getOscParams, setView } from "../app.ts";
 import {
-  buildSlots,
   clamp,
   dateFull,
   dateShort,
@@ -37,6 +36,7 @@ import { togglePlay } from "../ui/controls.js";
 import {
   drawModuleSurface,
   formatChurn,
+  invalidateCanvasSizes,
   liveReadHeadMs,
   liveWtPos,
   startDepthScan,
@@ -46,6 +46,8 @@ const LETTERS = ["A", "B", "C", "D", "E", "F", "G", "H"];
 
 let rackCards = [];
 let lastSignature = "";
+let lastTelemetrySig = "";
+const windowMetricsCache = new WeakMap();
 
 function label(index) {
   return `OSC ${LETTERS[index] ?? index + 1}`;
@@ -85,18 +87,47 @@ function cardWtPos(card) {
 
 function computeWindowMetrics(query, endMs) {
   if (!ctx.model || !ctx.view) return { commits: 0, churn: 0, agent: 0, endMs };
-  const search = searchCommits(ctx.model, query);
-  const win = windowFor(ctx.model, isoOf(endMs), ctx.view.span);
-  const slots = buildSlots(ctx.model, win, search.shas);
+  const model = ctx.model;
+  const span = ctx.view.span;
+  /* Quantize key to 1-minute resolution so micro-damping steps hit the cache cleanly */
+  const bucketMs = Math.round(endMs / 60000) * 60000;
+  let byKey = windowMetricsCache.get(model);
+  if (!byKey) {
+    byKey = new Map();
+    windowMetricsCache.set(model, byKey);
+  }
+  const key = `${span}|${query}|${bucketMs}`;
+  const hit = byKey.get(key);
+  if (hit) return hit;
+
+  const search = searchCommits(model, query);
+  const win = windowFor(model, isoOf(endMs), span);
+  const commitsList = model.doc.commits;
+  const times = model.commitTimeMs;
+  const shas = search.shas;
+  const startMs = win.startMs;
+  const winEnd = win.endMs;
   let commits = 0;
   let churn = 0;
   let agent = 0;
-  for (const s of slots) {
-    commits += s.count;
-    churn += s.churn;
-    agent += s.agentCount;
+  for (let i = 0; i < commitsList.length; i++) {
+    const c = commitsList[i];
+    if (c.merge) continue;
+    const t = times ? times[i] : Date.parse(c.time);
+    if (t < startMs) continue;
+    if (t > winEnd) break;
+    if (shas && !shas.has(c.sha)) continue;
+    commits += 1;
+    churn += c.insertions + c.deletions;
+    if (c.author.kind === "agent") agent += 1;
   }
-  return { commits, churn, agent, endMs: win.endMs };
+  const result = { commits, churn, agent, endMs: winEnd };
+  if (byKey.size >= 256) {
+    const oldest = byKey.keys().next().value;
+    if (oldest !== undefined) byKey.delete(oldest);
+  }
+  byKey.set(key, result);
+  return result;
 }
 
 function signedDelta(n) {
@@ -112,11 +143,25 @@ function signedChurn(n) {
 }
 
 /** Update live comparison bars, diff deltas, timestamps and master toolbar without rebuilding DOM. */
-export function syncRackTelemetry() {
+export function syncRackTelemetry(force = false) {
   if (!ctx.model || !ctx.view || !rackCards.length) return;
   const sharedPos = liveWtPos();
   const sharedMs = liveReadHeadMs();
   const sharedPct = Math.round(sharedPos * 100);
+  const posKey = ctx.rackSync
+    ? String(Math.round(sharedPos * 1000))
+    : rackCards.map((c) => Math.round(cardWtPos(c) * 1000)).join(",");
+  const sig = [
+    ctx.doc?.repo.id ?? "",
+    ctx.view.span,
+    ctx.view.query,
+    ctx.view.motion.playing ? 1 : 0,
+    ctx.rackSync ? 1 : 0,
+    rackCards.length,
+    posKey,
+  ].join("|");
+  if (!force && sig === lastTelemetrySig) return;
+  lastTelemetrySig = sig;
 
   /* Compute per-card real window metrics at each card's active timestamp */
   const stats = rackCards.map((card) => {
@@ -223,7 +268,7 @@ export function syncRackTelemetry() {
 }
 
 /** Redraw the existing oscillator canvases and sync live WT POS telemetry without rebuilding DOM. */
-export function drawRackFrames() {
+export function drawRackFrames(forceTelemetry = false) {
   for (const card of rackCards) {
     const wtPos = cardWtPos(card);
     drawModuleSurface(card.canvas, card.module, card.index, {
@@ -231,7 +276,7 @@ export function drawRackFrames() {
       wtPos,
     });
   }
-  syncRackTelemetry();
+  syncRackTelemetry(forceTelemetry);
 }
 
 /** Wire master rack toolbar events once at boot. */
@@ -303,13 +348,15 @@ export function renderRack() {
 
   const sig = rackSignature();
   if (rackCards.length > 0 && lastSignature === sig && rack.children.length > 0) {
-    drawRackFrames();
+    drawRackFrames(true);
     return;
   }
 
   clear(rack);
   rackCards = [];
   lastSignature = sig;
+  lastTelemetrySig = "";
+  invalidateCanvasSizes();
 
   const countMods = ctx.view.modules.length;
   rack.dataset.cols = String(Math.min(4, Math.max(1, countMods)));

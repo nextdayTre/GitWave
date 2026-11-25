@@ -3312,18 +3312,31 @@ function buildModel(doc) {
 	const commitsByRef = /* @__PURE__ */ new Map();
 	const refsById = /* @__PURE__ */ new Map();
 	const commitBySha = /* @__PURE__ */ new Map();
+	const commitTimeMs = new Float64Array(doc.commits.length);
+	const commitTimeBySha = /* @__PURE__ */ new Map();
+	const refTipMs = /* @__PURE__ */ new Map();
+	const refCreatedMs = /* @__PURE__ */ new Map();
 	for (const ref of doc.refs) {
 		refsById.set(ref.id, ref);
 		commitsByRef.set(ref.id, []);
+		refCreatedMs.set(ref.id, Date.parse(ref.createdAt));
 	}
-	for (const commit of doc.commits) {
+	for (let i = 0; i < doc.commits.length; i++) {
+		const commit = doc.commits[i];
+		const ms = Date.parse(commit.time);
+		commitTimeMs[i] = ms;
+		commitTimeBySha.set(commit.sha, ms);
 		commitBySha.set(commit.sha, commit);
 		for (const refId of commit.refs) {
 			const list = commitsByRef.get(refId);
 			if (list) list.push(commit);
 		}
 	}
-	for (const list of commitsByRef.values()) list.sort((a, b) => Date.parse(a.time) - Date.parse(b.time));
+	for (const [refId, list] of commitsByRef.entries()) {
+		list.sort((a, b) => (commitTimeBySha.get(a.sha) ?? 0) - (commitTimeBySha.get(b.sha) ?? 0));
+		const last = list[list.length - 1];
+		refTipMs.set(refId, last ? commitTimeBySha.get(last.sha) ?? Date.parse(last.time) : refCreatedMs.get(refId) ?? 0);
+	}
 	return {
 		doc,
 		startMs: Date.parse(doc.repo.span.from),
@@ -3331,7 +3344,11 @@ function buildModel(doc) {
 		commitBySha,
 		commitsByRef,
 		refsById,
-		tagsByTime: [...doc.tags].sort((a, b) => Date.parse(a.time) - Date.parse(b.time))
+		tagsByTime: [...doc.tags].sort((a, b) => Date.parse(a.time) - Date.parse(b.time)),
+		commitTimeMs,
+		commitTimeBySha,
+		refTipMs,
+		refCreatedMs
 	};
 }
 /** Deep-freeze a document so no render path can mutate history. */
@@ -3399,11 +3416,17 @@ function slotIndexForTime(window, timeMs) {
 */
 function effectiveCeiling(model, window, shas = null) {
 	const sums = new Array(32).fill(0);
-	for (const commit of model.doc.commits) {
+	const commits = model.doc.commits;
+	const times = model.commitTimeMs;
+	const startMs = window.startMs;
+	const endMs = window.endMs;
+	for (let i = 0; i < commits.length; i++) {
+		const commit = commits[i];
 		if (commit.merge) continue;
+		const t = times ? times[i] : Date.parse(commit.time);
+		if (t < startMs) continue;
+		if (t > endMs) break;
 		if (shas && !shas.has(commit.sha)) continue;
-		const t = Date.parse(commit.time);
-		if (t < window.startMs || t > window.endMs) continue;
 		sums[slotIndexForTime(window, t)] += commit.insertions + commit.deletions;
 	}
 	const sorted = sums.sort((a, b) => a - b);
@@ -3412,6 +3435,8 @@ function effectiveCeiling(model, window, shas = null) {
 }
 function buildSlots(model, window, shas = null, ceiling) {
 	const slots = new Array(32);
+	const newestTime = /* @__PURE__ */ new Float64Array(32);
+	newestTime.fill(Number.NEGATIVE_INFINITY);
 	for (let k = 0; k < 32; k++) slots[k] = {
 		k,
 		startMs: window.startMs + k * window.slotMs,
@@ -3424,29 +3449,43 @@ function buildSlots(model, window, shas = null, ceiling) {
 		byRef: /* @__PURE__ */ new Map(),
 		newest: null
 	};
-	for (const commit of model.doc.commits) {
+	const commits = model.doc.commits;
+	const times = model.commitTimeMs;
+	const timeBySha = model.commitTimeBySha;
+	const startMs = window.startMs;
+	const endMs = window.endMs;
+	for (let i = 0; i < commits.length; i++) {
+		const commit = commits[i];
 		if (commit.merge) continue;
+		const t = times ? times[i] : Date.parse(commit.time);
+		if (t < startMs) continue;
+		if (t > endMs) break;
 		if (shas && !shas.has(commit.sha)) continue;
-		const t = Date.parse(commit.time);
-		if (t < window.startMs || t > window.endMs) continue;
-		const slot = slots[slotIndexForTime(window, t)];
+		const k = slotIndexForTime(window, t);
+		const slot = slots[k];
 		const churn = commit.insertions + commit.deletions;
+		const isAgent = commit.author.kind === "agent";
 		slot.commits.push(commit);
 		slot.count += 1;
 		slot.churn += churn;
-		if (commit.author.kind === "agent") slot.agentCount += 1;
-		if (!slot.newest || Date.parse(commit.time) >= Date.parse(slot.newest.time)) slot.newest = commit;
+		if (isAgent) slot.agentCount += 1;
+		if (t >= newestTime[k]) {
+			newestTime[k] = t;
+			slot.newest = commit;
+		}
 		for (const refId of commit.refs) {
 			const existing = slot.byRef.get(refId);
 			if (existing) {
 				existing.count += 1;
 				existing.churn += churn;
-				if (Date.parse(commit.time) >= Date.parse(existing.tip.time)) existing.tip = commit;
+				if (isAgent) existing.agentCount += 1;
+				if (t >= (timeBySha?.get(existing.tip.sha) ?? Date.parse(existing.tip.time))) existing.tip = commit;
 			} else slot.byRef.set(refId, {
 				refId,
 				count: 1,
 				churn,
 				level: 0,
+				agentCount: isAgent ? 1 : 0,
 				tip: commit
 			});
 		}
@@ -3468,7 +3507,7 @@ function buildSlots(model, window, shas = null, ceiling) {
 */
 function refWave(model, ref, window, slots) {
 	const tipTime = refTipTime(model, ref);
-	const createdAt = Date.parse(ref.createdAt);
+	const createdAt = model.refCreatedMs?.get(ref.id) ?? Date.parse(ref.createdAt);
 	if (tipTime < window.startMs || createdAt > window.endMs) return [];
 	const first = ref.kind === "trunk" ? 0 : slotIndexForTime(window, Math.max(createdAt, window.startMs));
 	const last = ref.kind === "trunk" ? 31 : slotIndexForTime(window, Math.min(tipTime, window.endMs));
@@ -3481,15 +3520,18 @@ function refWave(model, ref, window, slots) {
 			k,
 			level: entry ? entry.level : 0,
 			count: entry ? entry.count : 0,
+			agentCount: entry ? entry.agentCount : 0,
 			tip: entry ? entry.tip : null
 		});
 	}
 	return points;
 }
 function refTipTime(model, ref) {
+	const cached = model.refTipMs?.get(ref.id);
+	if (cached !== void 0) return cached;
 	const commits = model.commitsByRef.get(ref.id) ?? [];
 	const last = commits[commits.length - 1];
-	return last ? Date.parse(last.time) : Date.parse(ref.createdAt);
+	return last ? model.commitTimeBySha?.get(last.sha) ?? Date.parse(last.time) : Date.parse(ref.createdAt);
 }
 function dateShort(ms) {
 	const d = new Date(ms);
@@ -3718,31 +3760,44 @@ function matchToken(model, commit, token) {
 			return false;
 		case "after": {
 			const ms = Date.parse(token.value.length === 10 ? `${token.value}T00:00:00Z` : token.value);
-			return Number.isFinite(ms) ? Date.parse(commit.time) >= ms : false;
+			const ct = model.commitTimeBySha?.get(commit.sha) ?? Date.parse(commit.time);
+			return Number.isFinite(ms) ? ct >= ms : false;
 		}
 		case "before": {
 			const ms = Date.parse(token.value.length === 10 ? `${token.value}T23:59:59Z` : token.value);
-			return Number.isFinite(ms) ? Date.parse(commit.time) <= ms : false;
+			const ct = model.commitTimeBySha?.get(commit.sha) ?? Date.parse(commit.time);
+			return Number.isFinite(ms) ? ct <= ms : false;
 		}
 		default: return textOf(commit, refs).includes(token.value);
 	}
 }
+var searchCache = /* @__PURE__ */ new WeakMap();
+var MAX_SEARCH_CACHE = 96;
+var EMPTY_SEARCH = Object.freeze({
+	query: "",
+	tokens: [],
+	shas: null,
+	matches: [],
+	count: 0,
+	error: null
+});
 /** Parse and run a query. Never throws; a bad token simply matches nothing. */
 function searchCommits(model, raw) {
 	const query = String(raw ?? "").trim().slice(0, 120);
-	if (!query) return {
-		query: "",
-		tokens: [],
-		shas: null,
-		matches: [],
-		count: 0,
-		error: null
-	};
+	if (!query) return EMPTY_SEARCH;
+	let byQuery = searchCache.get(model);
+	if (!byQuery) {
+		byQuery = /* @__PURE__ */ new Map();
+		searchCache.set(model, byQuery);
+	}
+	const hit = byQuery.get(query);
+	if (hit) return hit;
 	const tokens = tokenize(query);
 	const matches = [];
 	for (const commit of model.doc.commits) if (tokens.every((token) => matchToken(model, commit, token))) matches.push(commit);
-	matches.sort((a, b) => Date.parse(a.time) - Date.parse(b.time) || a.sha.localeCompare(b.sha));
-	return {
+	const timeBySha = model.commitTimeBySha;
+	matches.sort((a, b) => (timeBySha?.get(a.sha) ?? Date.parse(a.time)) - (timeBySha?.get(b.sha) ?? Date.parse(b.time)) || a.sha.localeCompare(b.sha));
+	const result = {
 		query,
 		tokens,
 		shas: new Set(matches.map((commit) => commit.sha)),
@@ -3750,6 +3805,12 @@ function searchCommits(model, raw) {
 		count: matches.length,
 		error: null
 	};
+	if (byQuery.size >= MAX_SEARCH_CACHE) {
+		const oldest = byQuery.keys().next().value;
+		if (oldest !== void 0) byQuery.delete(oldest);
+	}
+	byQuery.set(query, result);
+	return result;
 }
 /**
 * Derive deterministic folder/file content groups from commit paths so real
@@ -4159,127 +4220,164 @@ function evalFormula(formula, params, u, z, phi) {
 		}
 	}
 }
-/** Compute the task-specific cyclic modulation envelope & scan cursor for a slice. */
-function activityModulation(profile, u, z, phaseSec) {
-	const t = phaseSec * profile.rate;
-	switch (profile.sweep) {
-		case "scan": {
-			const head = t * .32 % 1;
-			const dist = Math.min(Math.abs(u - head), 1 - Math.abs(u - head));
-			const beam = Math.exp(-dist * dist * 32);
-			return {
-				amp: .65 + .5 * beam,
-				phaseShift: t * 1.1,
-				add: beam * .22 * Math.sin(z * Math.PI)
-			};
-		}
-		case "sonar": {
-			const ping = t * .48 % 1;
-			const ringA = Math.exp(-Math.pow(u - ping, 2) * 44);
-			const ringB = Math.exp(-Math.pow(u - (1 - ping), 2) * 44);
-			const pulse = Math.max(ringA, ringB);
-			return {
-				amp: .55 + .65 * pulse,
-				phaseShift: t * 1.85,
-				add: pulse * .25 * Math.sin(t * 4)
-			};
-		}
-		case "mirror": {
-			const side = u < .5 ? 1 : -1;
-			return {
-				amp: .85 * (1 - .45 * Math.exp(-Math.pow(u - .5, 2) * 60)),
-				phaseShift: side * t * 1.4,
-				add: side * .16 * Math.sin(t * 2.2 + z * Math.PI)
-			};
-		}
-		case "pulse": return {
-			amp: .72 + .38 * Math.pow(.5 + .5 * Math.sin(t * 2.6 - u * 4), 2),
-			phaseShift: t * 2.1,
-			add: .12 * Math.sin(u * Math.PI * 6 + t * 3)
-		};
-		case "ascend": {
-			const crest = ((1 - z) * .65 + u * .35 - t * .55) % 1;
-			const wrap = crest < 0 ? crest + 1 : crest;
-			const lift = Math.exp(-Math.pow(wrap - .5, 2) * 26);
-			return {
-				amp: .7 + .48 * lift,
-				phaseShift: -t * 2.4,
-				add: lift * .26
-			};
-		}
-		case "converge": {
-			const sep = .36 * (1 - .5 * (1 - Math.cos(t * 1.5)));
-			const g1 = Math.exp(-Math.pow(u - (.5 - sep), 2) * 34);
-			const g2 = Math.exp(-Math.pow(u - (.5 + sep), 2) * 34);
-			const lock = Math.max(g1, g2);
-			return {
-				amp: .52 + .64 * lock,
-				phaseShift: (u < .5 ? 1 : -1) * t * 1.3,
-				add: lock * .2
-			};
-		}
-		case "bloom": {
-			const radius = t * .45 % .55;
-			const d = Math.abs(Math.abs(u - .5) - radius);
-			const wave = Math.exp(-d * d * 75);
-			return {
-				amp: .58 + .56 * wave,
-				phaseShift: t * 1.6,
-				add: wave * .22
-			};
-		}
-		case "orbit": {
-			const orbit = .5 + .5 * Math.sin(t * 1.6 + z * Math.PI * 2);
-			return {
-				amp: .65 + .42 * orbit,
-				phaseShift: t * 1.45,
-				add: (orbit - .5) * .2
-			};
-		}
-		default: return {
-			amp: .72 + .28 * Math.sin(t * 1.15 + z * 1.4),
-			phaseShift: t * .75,
-			add: 0
-		};
+var taperCache = /* @__PURE__ */ new Map();
+function getAgentTaper(n) {
+	let arr = taperCache.get(n);
+	if (arr) return arr;
+	arr = new Float32Array(n);
+	for (let s = 1; s < n - 1; s++) {
+		const u = s / Math.max(1, n - 1);
+		arr[s] = Math.pow(Math.max(0, Math.sin(Math.PI * u)), .48);
 	}
+	taperCache.set(n, arr);
+	return arr;
 }
 /**
 * Synthesize one normalized slice `Float32Array` in [-1, 1] for the Agent Oscillator.
+* Optionally writes into a caller-supplied `out` buffer to avoid per-frame allocations.
 */
-function evaluateAgentSlice(config, zNorm, phaseSec, sampleCount = 64) {
+function evaluateAgentSlice(config, zNorm, phaseSec, sampleCount = 64, outBuf) {
 	const n = Math.max(16, Math.min(160, Math.round(sampleCount)));
 	const z = clamp(zNorm, 0, 1);
 	const profile = activityProfile(config.activity);
-	const out = new Float32Array(n);
-	for (let s = 0; s < n; s++) {
-		if (s === 0 || s === n - 1) {
-			out[s] = 0;
-			continue;
+	const out = outBuf && outBuf.length === n ? outBuf : new Float32Array(n);
+	const taper = getAgentTaper(n);
+	const t = phaseSec * profile.rate;
+	const sweep = profile.sweep;
+	const energy = profile.energy;
+	const formula = config.formula;
+	const params = config.params;
+	const invN = 1 / Math.max(1, n - 1);
+	out[0] = 0;
+	out[n - 1] = 0;
+	const zSinPi = Math.sin(z * Math.PI);
+	const breathAmp = sweep === "breath" ? .72 + .28 * Math.sin(t * 1.15 + z * 1.4) : 0;
+	const orbitVal = sweep === "orbit" ? .5 + .5 * Math.sin(t * 1.6 + z * Math.PI * 2) : 0;
+	const scanHead = sweep === "scan" ? t * .32 % 1 : 0;
+	const sonarPing = sweep === "sonar" ? t * .48 % 1 : 0;
+	const sonarSin = sweep === "sonar" ? Math.sin(t * 4) : 0;
+	const mirrorSin = sweep === "mirror" ? Math.sin(t * 2.2 + z * Math.PI) : 0;
+	const convergeSep = sweep === "converge" ? .36 * (1 - .5 * (1 - Math.cos(t * 1.5))) : 0;
+	const bloomRadius = sweep === "bloom" ? t * .45 % .55 : 0;
+	for (let s = 1; s < n - 1; s++) {
+		const u = s * invN;
+		let amp;
+		let phaseShift;
+		let add;
+		switch (sweep) {
+			case "scan": {
+				const diff = Math.abs(u - scanHead);
+				const dist = diff < 1 - diff ? diff : 1 - diff;
+				const beam = Math.exp(-dist * dist * 32);
+				amp = .65 + .5 * beam;
+				phaseShift = t * 1.1;
+				add = beam * .22 * zSinPi;
+				break;
+			}
+			case "sonar": {
+				const dA = u - sonarPing;
+				const dB = u - (1 - sonarPing);
+				const ringA = Math.exp(-dA * dA * 44);
+				const ringB = Math.exp(-dB * dB * 44);
+				const pulse = ringA > ringB ? ringA : ringB;
+				amp = .55 + .65 * pulse;
+				phaseShift = t * 1.85;
+				add = pulse * .25 * sonarSin;
+				break;
+			}
+			case "mirror": {
+				const side = u < .5 ? 1 : -1;
+				const du = u - .5;
+				amp = .85 * (1 - .45 * Math.exp(-du * du * 60));
+				phaseShift = side * t * 1.4;
+				add = side * .16 * mirrorSin;
+				break;
+			}
+			case "pulse": {
+				const base = .5 + .5 * Math.sin(t * 2.6 - u * 4);
+				amp = .72 + .38 * base * base;
+				phaseShift = t * 2.1;
+				add = .12 * Math.sin(u * Math.PI * 6 + t * 3);
+				break;
+			}
+			case "ascend": {
+				const crest = ((1 - z) * .65 + u * .35 - t * .55) % 1;
+				const dw = (crest < 0 ? crest + 1 : crest) - .5;
+				const lift = Math.exp(-dw * dw * 26);
+				amp = .7 + .48 * lift;
+				phaseShift = -t * 2.4;
+				add = lift * .26;
+				break;
+			}
+			case "converge": {
+				const d1 = u - (.5 - convergeSep);
+				const d2 = u - (.5 + convergeSep);
+				const g1 = Math.exp(-d1 * d1 * 34);
+				const g2 = Math.exp(-d2 * d2 * 34);
+				const lock = g1 > g2 ? g1 : g2;
+				amp = .52 + .64 * lock;
+				phaseShift = (u < .5 ? 1 : -1) * t * 1.3;
+				add = lock * .2;
+				break;
+			}
+			case "bloom": {
+				const d = Math.abs(Math.abs(u - .5) - bloomRadius);
+				const wave = Math.exp(-d * d * 75);
+				amp = .58 + .56 * wave;
+				phaseShift = t * 1.6;
+				add = wave * .22;
+				break;
+			}
+			case "orbit":
+				amp = .65 + .42 * orbitVal;
+				phaseShift = t * 1.45;
+				add = (orbitVal - .5) * .2;
+				break;
+			default:
+				amp = breathAmp;
+				phaseShift = t * .75;
+				add = 0;
 		}
-		const u = s / Math.max(1, n - 1);
-		const taper = Math.pow(Math.max(0, Math.sin(Math.PI * u)), .48);
-		const mod = activityModulation(profile, u, z, phaseSec);
-		const val = (evalFormula(config.formula, config.params, u, z, mod.phaseShift) * mod.amp * profile.energy + mod.add) * taper;
-		out[s] = clamp(val, -1, 1);
+		const val = (evalFormula(formula, params, u, z, phaseShift) * amp * energy + add) * taper[s];
+		out[s] = val < -1 ? -1 : val > 1 ? 1 : val;
 	}
 	return out;
 }
 /**
 * Build a complete stack of miniature 3D slices for the Floating Agent Oscillator.
+* Optionally reuses a preallocated `framePool` to eliminate 60fps typed-array churn.
 */
-function evaluateAgentSurface(config, phaseSec, sliceCount = 18, sampleCount = 64) {
+function evaluateAgentSurface(config, phaseSec, sliceCount = 18, sampleCount = 64, framePool) {
 	const count = Math.max(6, Math.min(36, Math.round(sliceCount)));
 	const profile = activityProfile(config.activity);
-	const frames = [];
+	const frames = framePool && framePool.length === count ? framePool : new Array(count);
 	for (let i = 0; i < count; i++) {
 		const z = count > 1 ? i / (count - 1) : 0;
-		frames.push(evaluateAgentSlice(config, z, phaseSec, sampleCount));
+		frames[i] = evaluateAgentSlice(config, z, phaseSec, sampleCount, frames[i]);
 	}
 	return {
 		frames,
 		scanZ: clamp(profile.sweep === "ascend" ? 1 - phaseSec * profile.rate * .28 % 1 : .5 - .5 * Math.cos(phaseSec * profile.rate * .85), 0, 1),
 		profile
 	};
+}
+/**
+* Continuously sample an interpolated slice at any floating-point `zNorm` in [0, 1]
+* across an already-evaluated AgentSurfaceFrame (zero extra trig, fluid Z-travel).
+*/
+function sampleAgentSlice(frames, zNorm, outBuf) {
+	const count = frames.length;
+	const n = count > 0 ? frames[0].length : 0;
+	const out = outBuf && outBuf.length === n ? outBuf : new Float32Array(n);
+	if (count === 0 || n === 0) return out;
+	const pos = clamp(zNorm, 0, 1) * (count - 1);
+	const i0 = Math.min(count - 1, Math.floor(pos));
+	const i1 = Math.min(count - 1, i0 + 1);
+	const frac = pos - i0;
+	const f0 = frames[i0];
+	const f1 = frames[i1];
+	for (let s = 0; s < n; s++) out[s] = f0[s] + (f1[s] - f0[s]) * frac;
+	return out;
 }
 // src/core/tour.ts
 var TOUR_CHAPTERS = [
@@ -4483,13 +4581,14 @@ var ctx = {
 	view: null,
 	window: null,
 	slots: [],
-	metricSlots: [],
 	metric: null,
 	depthSlices: [],
 	depthPhase: 0,
 	lfoDir: 1,
 	depthScan: -1,
 	morph: 0,
+	smoothWtPos: null,
+	isTransportTick: false,
 	rackSync: true,
 	browserOpen: false,
 	diffOpen: false,
@@ -4516,8 +4615,6 @@ var ctx = {
 		smooth: .52
 	},
 	browserHoverQuery: null,
-	activeSliceWave: null,
-	activeSliceZ: 0,
 	activeWtPos: 1,
 	activeSliceCount: 0,
 	activeSliceChurn: 0,
@@ -4592,11 +4689,15 @@ function installDocument(doc, view) {
 	ctx.view = view;
 	ctx.hoverSlot = -1;
 	ctx.prFilter = null;
+	ctx.smoothWtPos = null;
 	document.documentElement.dataset.theme = view.theme;
 	ctx.palette = readPalette();
 	ctx.paletteTheme = view.theme;
 	recompute();
 }
+var cachedPrsModel = null;
+var cachedPrsList = [];
+var cachedPrsMap = /* @__PURE__ */ new Map();
 function setView(next) {
 	if (!ctx.view) return;
 	if (next === ctx.view) return;
@@ -4620,28 +4721,33 @@ function recompute() {
 	const filterShas = search.shas;
 	const ceiling = effectiveCeiling(model, window, filterShas);
 	const slots = buildSlots(model, window, filterShas, ceiling);
-	const prs = openPrs(model);
+	if (cachedPrsModel !== model) {
+		cachedPrsModel = model;
+		cachedPrsList = openPrs(model);
+		cachedPrsMap = new Map(cachedPrsList.map((pr) => [pr.ref.id, pr]));
+	}
+	const prs = cachedPrsList;
 	const focusRef = model.refsById.get(view.focusRef) ?? null;
 	const active = view.modules.find((module) => module.query === view.query) ?? null;
 	const metricShas = search.shas;
 	const metricCeiling = ceiling;
-	const metricSlots = slots;
 	const metricColor = active ? ctx.palette?.identity[active.colorKey] ?? ctx.palette?.ok ?? "#34d399" : ctx.palette?.ok ?? "#34d399";
 	const metricLabel = active ? active.name : search.query ? `search “${search.query}”` : "all commits";
 	const waves = [];
-	for (const id of view.refs) {
-		const ref = model.refsById.get(id);
-		if (!ref) continue;
-		waves.push({
-			ref,
-			points: refWave(model, ref, window, slots)
-		});
+	if (!view.depth) {
+		for (const id of view.refs) {
+			const ref = model.refsById.get(id);
+			if (!ref) continue;
+			waves.push({
+				ref,
+				points: refWave(model, ref, window, slots)
+			});
+		}
+		waves.sort((a, b) => (a.ref.kind === "trunk" ? 1 : 0) - (b.ref.kind === "trunk" ? 1 : 0));
 	}
-	waves.sort((a, b) => (a.ref.kind === "trunk" ? 1 : 0) - (b.ref.kind === "trunk" ? 1 : 0));
 	ctx.window = window;
 	ctx.slots = slots;
 	ctx.search = search;
-	ctx.metricSlots = metricSlots;
 	ctx.metric = {
 		label: metricLabel,
 		color: metricColor,
@@ -4654,7 +4760,7 @@ function recompute() {
 	if (!search.count) ctx.matchIndex = -1;
 	else ctx.matchIndex = Math.min(ctx.matchIndex, search.count - 1);
 	ctx.prs = prs;
-	ctx.prsByRef = new Map(prs.map((pr) => [pr.ref.id, pr]));
+	ctx.prsByRef = cachedPrsMap;
 	ctx.waves = waves;
 	ctx.focusCommit = view.focusSha ? model.commitBySha.get(view.focusSha) ?? null : null;
 	ctx.focusRef = focusRef;
@@ -4706,7 +4812,7 @@ function getState() {
 	return {
 		schemaVersion: 1,
 		tool: "gitwave",
-		version: "0.4.0",
+		version: "0.5.0",
 		repo: {
 			id: ctx.doc.repo.id,
 			name: ctx.doc.repo.name,
@@ -5107,32 +5213,57 @@ var THEME_IDS = [
 	"mono"
 ];
 var THEME_LIST = THEME_IDS.map((id) => THEMES[id]);
+var rgbCache = /* @__PURE__ */ new Map();
 function hexToRgb(hex) {
+	const hit = rgbCache.get(hex);
+	if (hit) return [
+		hit[0],
+		hit[1],
+		hit[2]
+	];
 	const h = hex.replace("#", "");
 	const full = h.length === 3 ? h.split("").map((c) => c + c).join("") : h;
 	const n = parseInt(full, 16);
-	return [
+	const rgb = [
 		n >> 16 & 255,
 		n >> 8 & 255,
 		n & 255
 	];
+	if (rgbCache.size < 512) rgbCache.set(hex, rgb);
+	return [
+		rgb[0],
+		rgb[1],
+		rgb[2]
+	];
+}
+/** Fast cached RGB lookup (do not mutate returned tuple). */
+function hexToRgbFast(hex) {
+	const hit = rgbCache.get(hex);
+	if (hit) return hit;
+	const rgb = hexToRgb(hex);
+	return rgbCache.get(hex) ?? rgb;
 }
 function rgbToHex(rgb) {
 	return "#" + rgb.map((v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, "0")).join("");
 }
 function rgba(hex, alpha) {
-	const [r, g, b] = hexToRgb(hex);
-	return `rgba(${r},${g},${b},${alpha})`;
+	const rgb = hexToRgbFast(hex);
+	return `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${alpha})`;
 }
 function mixHex(a, b, t) {
-	const A = hexToRgb(a);
-	const B = hexToRgb(b);
+	const A = hexToRgbFast(a);
+	const B = hexToRgbFast(b);
 	const k = Math.max(0, Math.min(1, t));
 	return rgbToHex([
 		A[0] + (B[0] - A[0]) * k,
 		A[1] + (B[1] - A[1]) * k,
 		A[2] + (B[2] - A[2]) * k
 	]);
+}
+/** Mix two RGB triples directly into a CSS rgba() string with zero hex round-trip. */
+function rgbaMixRgb(a, b, t, alpha) {
+	const k = t < 0 ? 0 : t > 1 ? 1 : t;
+	return `rgba(${Math.round(a[0] + (b[0] - a[0]) * k)},${Math.round(a[1] + (b[1] - a[1]) * k)},${Math.round(a[2] + (b[2] - a[2]) * k)},${alpha.toFixed(3)})`;
 }
 function ageColor(theme, ageNorm) {
 	const t = THEMES[theme].tokens;
@@ -7248,23 +7379,111 @@ var SWEEP_RATE = .085;
 var BREATH_RATE = 1.15;
 var tableCache = /* @__PURE__ */ new Map();
 var MAX_CACHE = 48;
+var ceilingCache = /* @__PURE__ */ new WeakMap();
+var canvasSizeEpoch = 1;
+var canvasSizeCache = /* @__PURE__ */ new WeakMap();
+function invalidateCanvasSizes() {
+	canvasSizeEpoch += 1;
+}
+var sinPiCache = /* @__PURE__ */ new Map();
+function getSinPi(S) {
+	let arr = sinPiCache.get(S);
+	if (arr) return arr;
+	arr = new Float32Array(S);
+	const inv = 1 / Math.max(1, S - 1);
+	for (let s = 0; s < S; s++) arr[s] = Math.sin(Math.PI * s * inv);
+	sinPiCache.set(S, arr);
+	return arr;
+}
+var scratchCap = 0;
+var projX = /* @__PURE__ */ new Float32Array(0);
+var projY = /* @__PURE__ */ new Float32Array(0);
+var baseX = /* @__PURE__ */ new Float32Array(0);
+var baseY = /* @__PURE__ */ new Float32Array(0);
+var activeX = /* @__PURE__ */ new Float32Array(0);
+var activeY = /* @__PURE__ */ new Float32Array(0);
+var activeBaseX = /* @__PURE__ */ new Float32Array(0);
+var activeBaseY = /* @__PURE__ */ new Float32Array(0);
+function ensureProjectionScratch(total, S) {
+	if (total > scratchCap) {
+		scratchCap = total;
+		projX = new Float32Array(total);
+		projY = new Float32Array(total);
+		baseX = new Float32Array(total);
+		baseY = new Float32Array(total);
+	}
+	if (S > activeX.length) {
+		activeX = new Float32Array(S);
+		activeY = new Float32Array(S);
+		activeBaseX = new Float32Array(S);
+		activeBaseY = new Float32Array(S);
+	}
+}
+function getCachedCeiling(model, span, queryKey, shas) {
+	let byKey = ceilingCache.get(model);
+	if (!byKey) {
+		byKey = /* @__PURE__ */ new Map();
+		ceilingCache.set(model, byKey);
+	}
+	const key = `${span}|${queryKey}`;
+	const hit = byKey.get(key);
+	if (hit !== void 0) return hit;
+	const val = effectiveCeiling(model, windowFor(model, model.doc.repo.snapshotAt, span), shas);
+	if (byKey.size >= 128) {
+		const oldest = byKey.keys().next().value;
+		if (oldest !== void 0) byKey.delete(oldest);
+	}
+	byKey.set(key, val);
+	return val;
+}
 function formatChurn(n) {
 	if (n >= 1e4) return `${(n / 1e3).toFixed(1)}k`;
 	if (n >= 1e3) return `${(n / 1e3).toFixed(2)}k`;
 	return String(Math.round(n));
 }
 /**
-* Live normalized WT POS [0..1] coupled directly to the repo read head (`view.end`),
+* Target normalized WT POS [0..1] coupled directly to the repo read head (`view.end`),
 * with smooth sub-slot interpolation while the LFO transport is playing.
 * 0 = oldest travelable window for the span, 1 = latest snapshot (`now`).
 */
-function liveWtPos() {
+function targetWtPos() {
 	if (!ctx.model || !ctx.view) return 1;
 	const { minEnd, maxEnd } = historyRange(ctx.model, ctx.view.span);
 	if (maxEnd <= minEnd) return 1;
 	const baseEnd = ctx.window ? ctx.window.endMs : windowFor(ctx.model, ctx.view.end, ctx.view.span).endMs;
-	if (ctx.view.motion.playing && ctx.window && ctx.window.slotMs > 0) return clamp((clamp(baseEnd + (ctx.lfoDir || 1) * clamp(ctx.depthPhase, 0, 1) * ctx.window.slotMs, minEnd, maxEnd) - minEnd) / (maxEnd - minEnd), 0, 1);
+	if (ctx.view.motion.playing && ctx.window && ctx.window.slotMs > 0) {
+		const dir = ctx.lfoDir || 1;
+		const phase = clamp(ctx.depthPhase, 0, 1);
+		const delta = dir * phase * ctx.window.slotMs;
+		if (ctx.view.motion.mode === "sweep" && dir > 0 && baseEnd >= maxEnd - 1) return clamp((minEnd + phase * ctx.window.slotMs - minEnd) / (maxEnd - minEnd), 0, 1);
+		return clamp((clamp(baseEnd + delta, minEnd, maxEnd) - minEnd) / (maxEnd - minEnd), 0, 1);
+	}
 	return wtPosOf(ctx.model, ctx.view);
+}
+/**
+* Advance the smoothly damped visual WT POS for fluid glide on jumps & LFO travel.
+* Snaps instantly on reduced motion, static mode, or sweep wrap-around.
+*/
+function stepSmoothWtPos(dtSec = .0167, instant = false) {
+	const target = targetWtPos();
+	if (instant || ctx.reducedMotion || ctx.smoothWtPos === null || !Number.isFinite(ctx.smoothWtPos)) {
+		ctx.smoothWtPos = target;
+		return target;
+	}
+	const diff = target - ctx.smoothWtPos;
+	if (Math.abs(diff) < 4e-4 || ctx.view?.motion.playing && ctx.view.motion.mode === "sweep" && Math.abs(diff) > .6) {
+		ctx.smoothWtPos = target;
+		return target;
+	}
+	const rate = ctx.view?.motion.playing ? 24 : 18;
+	const alpha = 1 - Math.exp(-Math.min(.1, Math.max(.001, dtSec)) * rate);
+	ctx.smoothWtPos += diff * alpha;
+	return ctx.smoothWtPos;
+}
+/** Live normalized WT POS [0..1] (smoothly damped when animating, exact when static). */
+function liveWtPos() {
+	if (ctx.smoothWtPos !== null && Number.isFinite(ctx.smoothWtPos)) return clamp(ctx.smoothWtPos, 0, 1);
+	return targetWtPos();
 }
 /** Live read-head timestamp (ms) matching `liveWtPos()`. */
 function liveReadHeadMs() {
@@ -7300,14 +7519,27 @@ function getCachedTable(model, view, shas, ceiling, sliceCount, sampleCount, smo
 	tableCache.set(key, table);
 	return table;
 }
-function fit$2(canvas) {
-	const rect = canvas.getBoundingClientRect();
+function fit$2(canvas, forceMeasure = false) {
 	const dpr = Math.min(window.devicePixelRatio || 1, 2);
-	const width = Math.max(1, Math.round(rect.width));
-	const height = Math.max(1, Math.round(rect.height));
-	if (canvas.width !== Math.round(width * dpr) || canvas.height !== Math.round(height * dpr)) {
-		canvas.width = Math.round(width * dpr);
-		canvas.height = Math.round(height * dpr);
+	let entry = canvasSizeCache.get(canvas);
+	if (forceMeasure || !entry || entry.epoch !== canvasSizeEpoch || entry.width <= 1 || entry.height <= 1) {
+		const rect = canvas.getBoundingClientRect();
+		const width = Math.max(1, Math.round(rect.width));
+		const height = Math.max(1, Math.round(rect.height));
+		entry = {
+			epoch: canvasSizeEpoch,
+			width,
+			height,
+			dpr
+		};
+		canvasSizeCache.set(canvas, entry);
+	}
+	const { width, height } = entry;
+	const pxW = Math.round(width * dpr);
+	const pxH = Math.round(height * dpr);
+	if (canvas.width !== pxW || canvas.height !== pxH) {
+		canvas.width = pxW;
+		canvas.height = pxH;
 	}
 	const g = canvas.getContext("2d");
 	g.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -7341,7 +7573,7 @@ function makeProjector(w, h, yaw, pitch, opts = {}) {
 	const cx = w * .5;
 	const baseY = h * (.5 + centerYOffset);
 	const fov = 5.8;
-	return function project(x, y, z) {
+	function project(x, y, z) {
 		const ux = x * xStretch;
 		const uy = y * yStretch;
 		const uz = z * zStretch;
@@ -7355,7 +7587,21 @@ function makeProjector(w, h, yaw, pitch, opts = {}) {
 			y: baseY - screenUp * unitScale * p,
 			p
 		};
+	}
+	project.params = {
+		xStretch,
+		yStretch,
+		zStretch,
+		cy,
+		sy,
+		cp,
+		sp,
+		unitScale,
+		cx,
+		baseY,
+		fov
 	};
+	return project;
 }
 /** Draw Warpenter / Serum-style subtle 3D isometric bounding wireframe cage. */
 function drawWireCage(g, proj, P, frontColor, alphaScale = 1) {
@@ -7444,8 +7690,11 @@ function drawWireCage(g, proj, P, frontColor, alphaScale = 1) {
 }
 /**
 * Core volumetric 3D wavetable painter.
-* Renders back-to-front translucent silk ribbons, slope-lit surface quads,
+* Renders back-to-front translucent silk ribbons, slope-lit crest highlights,
 * subtle additive luminous mist, bright leading rim, and the active playhead slice.
+*
+* Uses flat Float32Array projection buffers and batched per-slice fills (~40x fewer
+* Canvas draw calls than per-quad fills, zero per-frame object/color-string churn).
 */
 function paintWavetable3D(g, table, proj, P, opts) {
 	const { frontColor, backColor, playheadColor, playheadPos, showPlayhead = true, breathPhase = 0, breathAmp = .025, mode = "stage" } = opts;
@@ -7455,79 +7704,108 @@ function paintWavetable3D(g, table, proj, P, opts) {
 	const isBrowser = mode === "browser";
 	const isStage = mode === "stage";
 	const rimHighlight = mixHex(frontColor, P.handle, isBrowser ? .62 : .48);
-	const crestLight = mixHex(frontColor, P.handle, .32);
+	const crestLight = mixHex(frontColor, P.handle, .34);
 	const playCore = mixHex(playheadColor, P.handle, .58);
-	const projected = new Array(D);
-	const zeroPlane = new Array(D);
+	const frontRgb = hexToRgbFast(frontColor);
+	const backRgb = hexToRgbFast(backColor);
+	const rimRgb = hexToRgbFast(rimHighlight);
+	const crestRgb = hexToRgbFast(crestLight);
+	ensureProjectionScratch(D * S, S);
+	const sinPi = getSinPi(S);
 	const breathScale = 1 + .035 * Math.sin(breathPhase);
+	const { xStretch, yStretch, zStretch, cy, sy, cp, sp, unitScale, cx, baseY: centerY, fov } = proj.params;
+	const invS = 1 / Math.max(1, S - 1);
+	const invD = D > 1 ? 1 / (D - 1) : 0;
+	const doBreath = !table.empty && breathAmp > 0;
 	for (let i = 0; i < D; i++) {
-		const zNorm = D > 1 ? i / (D - 1) : 0;
-		const zCoord = -1 + zNorm * 2;
+		const zNorm = i * invD;
+		const uz = (-1 + zNorm * 2) * zStretch;
+		const uzSy = uz * sy;
+		const uzCy = uz * cy;
 		const frame = table.frames[i];
-		const pts = new Array(S);
-		const base = new Array(S);
+		const rowOff = i * S;
+		const zPhase = breathPhase + zNorm * 2.4;
 		for (let s = 0; s < S; s++) {
-			const u = s / Math.max(1, S - 1);
-			const xCoord = -1 + u * 2;
+			const u = s * invS;
+			const ux = (-1 + u * 2) * xStretch;
+			const rx = ux * cy + uzSy;
+			const rz = -ux * sy + uzCy;
 			let yVal = frame[s] * breathScale;
-			if (!table.empty && breathAmp > 0) {
-				const win = Math.sin(Math.PI * u);
-				yVal += Math.sin(u * Math.PI * 4 + breathPhase + zNorm * 2.4) * breathAmp * win;
-			}
-			pts[s] = proj(xCoord, yVal, zCoord);
-			base[s] = proj(xCoord, 0, zCoord);
+			if (doBreath) yVal += Math.sin(u * 12.566370614359172 + zPhase) * breathAmp * sinPi[s];
+			const uy = yVal * yStretch;
+			const screenUp = uy * cp + rz * sp;
+			const camDepth = rz * cp - uy * sp;
+			const p = fov / (fov + camDepth > 2.2 ? fov + camDepth : 2.2);
+			const idx = rowOff + s;
+			projX[idx] = cx + rx * unitScale * p;
+			projY[idx] = centerY - screenUp * unitScale * p;
+			const baseCam = rz * cp;
+			const pb = fov / (fov + baseCam > 2.2 ? fov + baseCam : 2.2);
+			baseX[idx] = cx + rx * unitScale * pb;
+			baseY[idx] = centerY - rz * sp * unitScale * pb;
 		}
-		projected[i] = pts;
-		zeroPlane[i] = base;
 	}
 	const activeZ = clamp(playheadPos, 0, 1);
 	const activeSliceValues = sampleWavetableSlice(table, activeZ, breathPhase, breathAmp);
-	const activeZCoord = -1 + activeZ * 2;
-	const activePts = new Array(S);
-	const activeBase = new Array(S);
+	const activeUz = (-1 + activeZ * 2) * zStretch;
+	const aUzSy = activeUz * sy;
+	const aUzCy = activeUz * cy;
 	for (let s = 0; s < S; s++) {
-		const xCoord = -1 + s / Math.max(1, S - 1) * 2;
-		activePts[s] = proj(xCoord, activeSliceValues[s], activeZCoord);
-		activeBase[s] = proj(xCoord, 0, activeZCoord);
+		const ux = (-1 + s * invS * 2) * xStretch;
+		const rx = ux * cy + aUzSy;
+		const rz = -ux * sy + aUzCy;
+		const uy = activeSliceValues[s] * yStretch;
+		const screenUp = uy * cp + rz * sp;
+		const camDepth = rz * cp - uy * sp;
+		const p = fov / (fov + camDepth > 2.2 ? fov + camDepth : 2.2);
+		activeX[s] = cx + rx * unitScale * p;
+		activeY[s] = centerY - screenUp * unitScale * p;
+		const baseCam = rz * cp;
+		const pb = fov / (fov + baseCam > 2.2 ? fov + baseCam : 2.2);
+		activeBaseX[s] = cx + rx * unitScale * pb;
+		activeBaseY[s] = centerY - rz * sp * unitScale * pb;
 	}
 	const playheadInsertIdx = Math.round(activeZ * (D - 1));
+	let activeEnergy = .4;
+	if (table.meta && table.meta.length > 0) {
+		const mPos = activeZ * (table.meta.length - 1);
+		const m0 = Math.min(table.meta.length - 1, Math.floor(mPos));
+		const m1 = Math.min(table.meta.length - 1, m0 + 1);
+		const mf = mPos - m0;
+		activeEnergy = table.meta[m0].energy + (table.meta[m1].energy - table.meta[m0].energy) * mf;
+	}
 	const drawPlayheadSlice = () => {
 		if (!showPlayhead) return;
+		const energyBoost = .85 + .45 * activeEnergy;
 		g.save();
 		g.beginPath();
-		for (let s = 0; s < S; s++) if (s === 0) g.moveTo(activePts[s].x, activePts[s].y);
-		else g.lineTo(activePts[s].x, activePts[s].y);
-		for (let s = S - 1; s >= 0; s--) g.lineTo(activeBase[s].x, activeBase[s].y);
+		g.moveTo(activeX[0], activeY[0]);
+		for (let s = 1; s < S; s++) g.lineTo(activeX[s], activeY[s]);
+		for (let s = S - 1; s >= 0; s--) g.lineTo(activeBaseX[s], activeBaseY[s]);
 		g.closePath();
-		g.fillStyle = rgba(playheadColor, isStage ? .16 : .14);
+		g.fillStyle = rgba(playheadColor, (isStage ? .15 : .13) * energyBoost);
 		g.fill();
 		g.strokeStyle = rgba(playheadColor, .35);
 		g.lineWidth = .85;
 		g.beginPath();
-		g.moveTo(activeBase[0].x, activeBase[0].y);
-		g.lineTo(activeBase[S - 1].x, activeBase[S - 1].y);
+		g.moveTo(activeBaseX[0], activeBaseY[0]);
+		g.lineTo(activeBaseX[S - 1], activeBaseY[S - 1]);
 		g.stroke();
 		g.lineJoin = "round";
 		g.lineCap = "round";
 		g.globalCompositeOperation = "lighter";
-		g.strokeStyle = rgba(playheadColor, isStage ? .28 : .24);
-		g.lineWidth = isStage ? 8.5 : 5.5;
+		g.strokeStyle = rgba(playheadColor, (isStage ? .26 : .22) * energyBoost);
+		g.lineWidth = (isStage ? 8.2 : 5.4) * (.9 + .25 * activeEnergy);
 		g.beginPath();
-		for (let s = 0; s < S; s++) if (s === 0) g.moveTo(activePts[s].x, activePts[s].y);
-		else g.lineTo(activePts[s].x, activePts[s].y);
+		g.moveTo(activeX[0], activeY[0]);
+		for (let s = 1; s < S; s++) g.lineTo(activeX[s], activeY[s]);
 		g.stroke();
 		g.globalCompositeOperation = "source-over";
 		g.strokeStyle = playheadColor;
 		g.lineWidth = isStage ? 2.2 : 1.75;
-		g.beginPath();
-		for (let s = 0; s < S; s++) if (s === 0) g.moveTo(activePts[s].x, activePts[s].y);
-		else g.lineTo(activePts[s].x, activePts[s].y);
 		g.stroke();
 		g.strokeStyle = rgba(playCore, .88);
 		g.lineWidth = isStage ? .9 : .7;
-		g.beginPath();
-		for (let s = 0; s < S; s++) if (s === 0) g.moveTo(activePts[s].x, activePts[s].y);
-		else g.lineTo(activePts[s].x, activePts[s].y);
 		g.stroke();
 		const markerSlot = opts.markerSlot ?? -1;
 		const markerOwned = opts.markerOwned !== false;
@@ -7535,9 +7813,11 @@ function paintWavetable3D(g, table, proj, P, opts) {
 		const markerLabel = opts.markerLabel ?? "";
 		if (!isBrowser && markerSlot >= 0 && markerSlot < 32) {
 			const idx = Math.round(markerSlot / 31 * (S - 1));
-			const mp = activePts[idx];
-			const mb = activeBase[idx];
-			if (mp && mb) {
+			const mpx = activeX[idx];
+			const mpy = activeY[idx];
+			const mbx = activeBaseX[idx];
+			const mby = activeBaseY[idx];
+			if (Number.isFinite(mpx) && Number.isFinite(mbx)) {
 				const dotYellow = mixHex(playheadColor, P.handle, .25);
 				const dotCore = mixHex(playheadColor, P.handle, .78);
 				const baseR = isStage ? 4.8 : 3.9;
@@ -7547,51 +7827,51 @@ function paintWavetable3D(g, table, proj, P, opts) {
 				g.lineWidth = isStage ? 1.2 : 1;
 				g.setLineDash([2.5, 2.5]);
 				g.beginPath();
-				g.moveTo(mb.x, mb.y);
-				g.lineTo(mp.x, mp.y);
+				g.moveTo(mbx, mby);
+				g.lineTo(mpx, mpy);
 				g.stroke();
 				g.setLineDash([]);
 				g.fillStyle = rgba(playheadColor, markerOwned ? .6 : .28);
 				g.beginPath();
-				g.arc(mb.x, mb.y, isStage ? 2.2 : 1.7, 0, Math.PI * 2);
+				g.arc(mbx, mby, isStage ? 2.2 : 1.7, 0, Math.PI * 2);
 				g.fill();
 				g.strokeStyle = rgba(playheadColor, sonarAlpha);
 				g.lineWidth = isStage ? 1.8 : 1.4;
 				g.beginPath();
-				g.arc(mp.x, mp.y, sonarR, 0, Math.PI * 2);
+				g.arc(mpx, mpy, sonarR, 0, Math.PI * 2);
 				g.stroke();
 				if (markerOwned) {
 					g.save();
 					g.globalCompositeOperation = "lighter";
 					g.fillStyle = rgba(playheadColor, .36 + .24 * (1 - markerPulse));
 					g.beginPath();
-					g.arc(mp.x, mp.y, baseR + 4.2 + markerPulse * 2.2, 0, Math.PI * 2);
+					g.arc(mpx, mpy, baseR + 4.2 + markerPulse * 2.2, 0, Math.PI * 2);
 					g.fill();
 					g.restore();
 					g.fillStyle = dotYellow;
 					g.beginPath();
-					g.arc(mp.x, mp.y, baseR + .4 * Math.sin(markerPulse * Math.PI), 0, Math.PI * 2);
+					g.arc(mpx, mpy, baseR + .4 * Math.sin(markerPulse * Math.PI), 0, Math.PI * 2);
 					g.fill();
 					g.strokeStyle = P.bg;
 					g.lineWidth = 1;
 					g.stroke();
 					g.fillStyle = dotCore;
 					g.beginPath();
-					g.arc(mp.x, mp.y, baseR * .44, 0, Math.PI * 2);
+					g.arc(mpx, mpy, baseR * .44, 0, Math.PI * 2);
 					g.fill();
 				} else {
 					g.strokeStyle = rgba(dotYellow, .85);
 					g.lineWidth = 1.6;
 					g.beginPath();
-					g.arc(mp.x, mp.y, baseR * .9, 0, Math.PI * 2);
+					g.arc(mpx, mpy, baseR * .9, 0, Math.PI * 2);
 					g.stroke();
 				}
 				if (markerLabel && (isStage || markerOwned)) {
 					g.font = `${isStage ? "9.5px" : "8.5px"} ${MONO$1}`;
 					const pillW = g.measureText(markerLabel).width + 10;
 					const pillH = isStage ? 15 : 13;
-					const px = mp.x - pillW * .5;
-					const py = mp.y - baseR - pillH - 7;
+					const px = mpx - pillW * .5;
+					const py = mpy - baseR - pillH - 7;
 					g.fillStyle = rgba(P.bg, .86);
 					g.strokeStyle = rgba(playheadColor, .65);
 					g.lineWidth = .9;
@@ -7602,7 +7882,7 @@ function paintWavetable3D(g, table, proj, P, opts) {
 					g.fillStyle = dotYellow;
 					g.textAlign = "center";
 					g.textBaseline = "middle";
-					g.fillText(markerLabel, mp.x, py + pillH * .5 + .5);
+					g.fillText(markerLabel, mpx, py + pillH * .5 + .5);
 				}
 			}
 		}
@@ -7612,58 +7892,76 @@ function paintWavetable3D(g, table, proj, P, opts) {
 	g.lineJoin = "round";
 	g.lineCap = "round";
 	let playheadDrawn = false;
-	const quadStep = isBrowser ? 2 : 1;
+	const quadStep = isStage ? 2 : 3;
 	for (let i = D - 1; i >= 0; i--) {
-		const zNorm = D > 1 ? i / (D - 1) : 0;
+		const zNorm = i * invD;
 		const foreWeight = 1 - zNorm;
-		const sliceColor = mixHex(frontColor, backColor, Math.pow(zNorm, .85));
-		const pts = projected[i];
-		const base = zeroPlane[i];
+		const zBlend = Math.pow(zNorm, .85);
+		const sliceRgb = [
+			frontRgb[0] + (backRgb[0] - frontRgb[0]) * zBlend,
+			frontRgb[1] + (backRgb[1] - frontRgb[1]) * zBlend,
+			frontRgb[2] + (backRgb[2] - frontRgb[2]) * zBlend
+		];
+		const rowOff = i * S;
 		if (i > 0 && !table.empty) {
-			const nextPts = projected[i - 1];
+			const nextOff = (i - 1) * S;
 			const frameA = table.frames[i];
 			const frameB = table.frames[i - 1];
+			const layerEnergy = table.meta?.[i]?.energy ?? .45;
 			const stripAlphaBase = isBrowser ? .045 + .095 * foreWeight : isStage ? .055 + .115 * foreWeight : .065 + .125 * foreWeight;
+			g.beginPath();
+			g.moveTo(projX[rowOff], projY[rowOff]);
+			for (let s = 1; s < S; s++) g.lineTo(projX[rowOff + s], projY[rowOff + s]);
+			for (let s = S - 1; s >= 0; s--) g.lineTo(projX[nextOff + s], projY[nextOff + s]);
+			g.closePath();
+			g.fillStyle = rgbaMixRgb(sliceRgb, crestRgb, .18 * foreWeight, stripAlphaBase * (.64 + .36 * layerEnergy));
+			g.fill();
+			let hasCrest = false;
+			g.beginPath();
 			for (let s = 0; s < S - quadStep; s += quadStep) {
-				const s2 = Math.min(S - 1, s + quadStep);
+				const s2 = s + quadStep < S ? s + quadStep : S - 1;
 				const hAvg = (frameA[s] + frameA[s2] + frameB[s] + frameB[s2]) * .25;
 				const slope = (frameB[s] - frameA[s]) * 1.4 + (frameB[s2] - frameB[s]) * .8;
-				g.fillStyle = rgba(mixHex(sliceColor, crestLight, clamp(.45 + hAvg * .45 + slope * .35, 0, 1) * .55), stripAlphaBase * (.55 + .65 * Math.abs(hAvg)));
-				g.beginPath();
-				g.moveTo(pts[s].x, pts[s].y);
-				g.lineTo(pts[s2].x, pts[s2].y);
-				g.lineTo(nextPts[s2].x, nextPts[s2].y);
-				g.lineTo(nextPts[s].x, nextPts[s].y);
-				g.closePath();
+				if (hAvg * .45 + slope * .35 > .11) {
+					hasCrest = true;
+					const a0 = rowOff + s;
+					const a1 = rowOff + s2;
+					const b0 = nextOff + s;
+					const b1 = nextOff + s2;
+					g.moveTo(projX[a0], projY[a0]);
+					g.lineTo(projX[a1], projY[a1]);
+					g.lineTo(projX[b1], projY[b1]);
+					g.lineTo(projX[b0], projY[b0]);
+					g.closePath();
+				}
+			}
+			if (hasCrest) {
+				g.fillStyle = rgbaMixRgb(sliceRgb, crestRgb, .58, stripAlphaBase * .42);
 				g.fill();
 			}
 		}
 		if (!table.empty) {
 			g.beginPath();
-			for (let s = 0; s < S; s++) if (s === 0) g.moveTo(pts[s].x, pts[s].y);
-			else g.lineTo(pts[s].x, pts[s].y);
-			for (let s = S - 1; s >= 0; s--) g.lineTo(base[s].x, base[s].y);
+			g.moveTo(projX[rowOff], projY[rowOff]);
+			for (let s = 1; s < S; s++) g.lineTo(projX[rowOff + s], projY[rowOff + s]);
+			for (let s = S - 1; s >= 0; s--) g.lineTo(baseX[rowOff + s], baseY[rowOff + s]);
 			g.closePath();
-			g.fillStyle = rgba(sliceColor, isBrowser ? .018 + .042 * foreWeight : .02 + .048 * foreWeight);
+			g.fillStyle = rgbaMixRgb(sliceRgb, sliceRgb, 0, isBrowser ? .018 + .042 * foreWeight : .02 + .048 * foreWeight);
 			g.fill();
 		}
 		const strokeAlpha = i === 0 ? .94 : (isBrowser ? .1 : .08) + (isBrowser ? .44 : .38) * Math.pow(foreWeight, 1.35);
-		g.strokeStyle = i === 0 ? rimHighlight : rgba(mixHex(sliceColor, rimHighlight, foreWeight * .35), strokeAlpha);
+		g.strokeStyle = i === 0 ? rimHighlight : rgbaMixRgb(sliceRgb, rimRgb, foreWeight * .35, strokeAlpha);
 		g.lineWidth = i === 0 ? isStage ? 1.8 : 1.4 : isStage ? .8 : .65;
 		g.beginPath();
-		for (let s = 0; s < S; s++) if (s === 0) g.moveTo(pts[s].x, pts[s].y);
-		else g.lineTo(pts[s].x, pts[s].y);
+		g.moveTo(projX[rowOff], projY[rowOff]);
+		for (let s = 1; s < S; s++) g.lineTo(projX[rowOff + s], projY[rowOff + s]);
 		g.stroke();
 		if (!table.empty && (i === 0 || i % 3 === 0)) {
-			g.save();
 			g.globalCompositeOperation = "lighter";
-			g.strokeStyle = rgba(i === 0 ? rimHighlight : frontColor, i === 0 ? .24 : .055 + .065 * foreWeight);
+			g.strokeStyle = i === 0 ? rgbaMixRgb(rimRgb, rimRgb, 0, .24) : rgbaMixRgb(frontRgb, frontRgb, 0, .055 + .065 * foreWeight);
 			g.lineWidth = i === 0 ? isStage ? 5.5 : 3.8 : isStage ? 2.2 : 1.6;
-			g.beginPath();
-			for (let s = 0; s < S; s++) if (s === 0) g.moveTo(pts[s].x, pts[s].y);
-			else g.lineTo(pts[s].x, pts[s].y);
 			g.stroke();
-			g.restore();
+			g.globalCompositeOperation = "source-over";
 		}
 		if (showPlayhead && !playheadDrawn && i <= playheadInsertIdx) {
 			drawPlayheadSlice();
@@ -7672,17 +7970,14 @@ function paintWavetable3D(g, table, proj, P, opts) {
 	}
 	if (showPlayhead && !playheadDrawn) drawPlayheadSlice();
 	g.restore();
-	return {
-		activeSliceValues,
-		activeZ
-	};
+	return { activeZ };
 }
 /**
 * Hero Stage 3D renderer (Warpenter-inspired full volumetric wavetable + orbit).
 * Anchored to the full repository history for the span; the glowing amber
 * playhead slice is directly coupled to the real Git read head (`view.end`).
 */
-function drawDepth() {
+function drawDepth(forceScope = false) {
 	const canvas = document.getElementById("wave");
 	if (!canvas || !ctx.view || !ctx.model || !ctx.palette || !ctx.window || !ctx.metric) return;
 	const { g, width: w, height: h } = fit$2(canvas);
@@ -7690,7 +7985,7 @@ function drawDepth() {
 	const view = ctx.view;
 	const model = ctx.model;
 	const shas = ctx.search.shas;
-	const stableCeiling = effectiveCeiling(model, windowFor(model, model.doc.repo.snapshotAt, view.span), shas);
+	const stableCeiling = getCachedCeiling(model, view.span, view.query, shas);
 	const frontColor = ctx.metric.color;
 	const sp = ctx.stageParams;
 	const table = getCachedTable(model, view, shas, stableCeiling, 56, 112, sp.smooth, ctx.view.query || ctx.metric.label, true);
@@ -7720,15 +8015,15 @@ function drawDepth() {
 	drawWireCage(g, proj, P, frontColor, 1);
 	let focusK = -1;
 	if (ctx.focusCommit && ctx.window) {
-		const ft = Date.parse(ctx.focusCommit.time);
+		const ft = model.commitTimeBySha?.get(ctx.focusCommit.sha) ?? Date.parse(ctx.focusCommit.time);
 		if (ft >= ctx.window.startMs && ft <= ctx.window.endMs) focusK = slotIndexForTime(ctx.window, ft);
 	}
 	const markerSlot = ctx.hoverSlot >= 0 ? ctx.hoverSlot : focusK;
 	let markerLabel = "";
 	if (ctx.hoverSlot >= 0 && ctx.slots[ctx.hoverSlot]) markerLabel = dateShort(ctx.slots[ctx.hoverSlot].startMs);
-	else if (focusK >= 0 && ctx.focusCommit) markerLabel = `${dateShort(Date.parse(ctx.focusCommit.time))} · ${shortSha(ctx.focusCommit.sha, 6)}`;
+	else if (focusK >= 0 && ctx.focusCommit) markerLabel = `${dateShort(model.commitTimeBySha?.get(ctx.focusCommit.sha) ?? Date.parse(ctx.focusCommit.time))} · ${shortSha(ctx.focusCommit.sha, 6)}`;
 	const markerPulse = .5 + .5 * Math.sin(morph * 4.4);
-	const res = paintWavetable3D(g, table, proj, P, {
+	paintWavetable3D(g, table, proj, P, {
 		frontColor,
 		backColor: P.depth,
 		playheadColor: P.open,
@@ -7749,11 +8044,9 @@ function drawDepth() {
 		winChurn += s.churn;
 	}
 	ctx.activeWtPos = wtPos;
-	ctx.activeSliceZ = playheadZ;
 	ctx.activeSliceCount = winCommits;
 	ctx.activeSliceChurn = winChurn;
 	ctx.activeSliceDate = dateFull(liveReadHeadMs());
-	if (res) ctx.activeSliceWave = res.activeSliceValues;
 	g.save();
 	g.font = `10px ${MONO$1}`;
 	g.textAlign = "right";
@@ -7789,8 +8082,9 @@ function drawDepth() {
 		g.fillText(ctx.search.query ? "no matching commits — zero plane" : "no commits in this window", w / 2, h / 2);
 		g.restore();
 	}
-	drawActiveScope();
+	drawActiveScope(forceScope);
 }
+var lastScopeSig = "";
 var scopePointerActive = false;
 function updateScopeTooltip(k, canvasW) {
 	const tip = document.getElementById("scopeTooltip");
@@ -7838,10 +8132,29 @@ function updateScopeTooltip(k, canvasW) {
 * the active WT POS timestamp with clickable commit peaks, agent halos,
 * merge diamonds, open PR rings and hover inspection tooltips.
 */
-function drawActiveScope() {
+function drawActiveScope(force = false) {
 	const canvas = document.getElementById("scope2d");
-	if (!canvas || canvas.offsetParent === null || !ctx.palette || !ctx.metric || !ctx.window) return;
+	if (!canvas || !ctx.palette || !ctx.metric || !ctx.window || !ctx.view) return;
+	if (ctx.diffOpen || ctx.browserOpen || !ctx.view.depth || ctx.view.rack) return;
+	const pct = Math.round(liveWtPos() * 100);
+	const scopeSig = [
+		canvasSizeEpoch,
+		ctx.doc?.repo.id ?? "",
+		ctx.view.theme,
+		ctx.view.query,
+		ctx.window.startMs,
+		ctx.window.endMs,
+		ctx.metric.color,
+		ctx.hoverSlot,
+		ctx.focusCommit?.sha ?? "",
+		pct,
+		ctx.activeSliceCount,
+		ctx.activeSliceChurn
+	].join("|");
+	if (!force && scopeSig === lastScopeSig) return;
+	lastScopeSig = scopeSig;
 	const { g, width: w, height: h } = fit$2(canvas);
+	if (w < 8 || h < 8) return;
 	const P = ctx.palette;
 	const slots = ctx.slots;
 	if (!slots || slots.length !== 32) return;
@@ -8155,7 +8468,7 @@ function drawModuleSurface(canvas, module, index = 0, opts = {}) {
 	const isBrowser = mode === "browser";
 	const search = searchCommits(model, module.query);
 	const shas = search.shas;
-	const ceiling = effectiveCeiling(model, windowFor(model, model.doc.repo.snapshotAt, ctx.view.span), shas);
+	const ceiling = getCachedCeiling(model, ctx.view.span, module.query, shas);
 	const frontColor = opts.color ?? (isBrowser ? P.ok : P.identity[module.colorKey] ?? P.ok);
 	const osc = getOscParams(module.query);
 	const smooth = opts.smooth ?? osc.smooth;
@@ -8601,8 +8914,15 @@ function createKnob(opts) {
 	wrap.appendChild(labelEl);
 	wrap.appendChild(valueEl);
 	let current = clamp(opts.value ?? .5, 0, 1);
+	let lastText = "";
+	let renderedOnce = false;
 	function renderValue(v, customText) {
-		current = clamp(v, 0, 1);
+		const next = clamp(v, 0, 1);
+		const text = customText ?? (opts.format ? opts.format(next) : `${Math.round(next * 100)}%`);
+		if (renderedOnce && Math.abs(next - current) < 8e-4 && text === lastText) return;
+		renderedOnce = true;
+		current = next;
+		lastText = text;
 		const endDeg = START_DEG + current * SWEEP_DEG;
 		const d = arcPath(cx, cy, r, START_DEG, Math.max(136, endDeg));
 		arc.setAttribute("d", d);
@@ -8613,7 +8933,6 @@ function createKnob(opts) {
 		tick.setAttribute("y1", inner.y.toFixed(2));
 		tick.setAttribute("x2", outer.x.toFixed(2));
 		tick.setAttribute("y2", outer.y.toFixed(2));
-		const text = customText ?? (opts.format ? opts.format(current) : `${Math.round(current * 100)}%`);
 		valueEl.textContent = text;
 		btn.setAttribute("aria-valuenow", String(Math.round(current * 100)));
 		btn.setAttribute("aria-valuetext", text);
@@ -8748,8 +9067,11 @@ function syncStageKnobsLive() {
 	stageKnobRefs.pos.setValue(pos, pct >= 100 ? "NOW" : `${pct}%`);
 	if (stageKnobRefs.scanBtn) {
 		const playing = ctx.view.motion.playing;
-		stageKnobRefs.scanBtn.setAttribute("aria-pressed", playing ? "true" : "false");
-		stageKnobRefs.scanBtn.textContent = playing ? "⏸ LFO" : "▶ LFO";
+		const pressed = playing ? "true" : "false";
+		if (stageKnobRefs.scanBtn.getAttribute("aria-pressed") !== pressed) {
+			stageKnobRefs.scanBtn.setAttribute("aria-pressed", pressed);
+			stageKnobRefs.scanBtn.textContent = playing ? "⏸ LFO" : "▶ LFO";
+		}
 	}
 }
 function initStageKnobs() {
@@ -9048,7 +9370,6 @@ function initControls() {
 	]) $(id)?.addEventListener("click", () => {
 		if (ctx.view) setView(toggleLens(ctx.view, key));
 	});
-	$("depthBtn")?.addEventListener("click", toggleDepth);
 	$("modeRack")?.addEventListener("click", () => setUiMode("rack"));
 	$("modeStage")?.addEventListener("click", () => setUiMode("stage"));
 	$("modeBrowser")?.addEventListener("click", () => setUiMode("browser"));
@@ -9158,19 +9479,27 @@ function initControls() {
 		closeThemeMenu();
 	});
 }
-function syncControls() {
+function syncControls(transportOnly = false) {
 	if (!ctx.model || !ctx.view) return;
 	const stops = stopsFor(ctx.model);
 	const index = activeStopIndex(ctx.model, ctx.view);
 	const version = $("version");
 	const versionOut = $("versionOut");
 	if (version instanceof HTMLInputElement) {
-		version.max = String(Math.max(0, stops.length - 1));
-		version.value = String(index);
+		const maxStr = String(Math.max(0, stops.length - 1));
+		const idxStr = String(index);
+		if (version.max !== maxStr) version.max = maxStr;
+		if (version.value !== idxStr) version.value = idxStr;
 	}
 	if (versionOut) {
 		const stop = stops[index];
-		versionOut.textContent = stop ? `${stop.label} · ${dateFull(stop.timeMs)}` : "—";
+		const label = stop ? `${stop.label} · ${dateFull(stop.timeMs)}` : "—";
+		if (versionOut.textContent !== label) versionOut.textContent = label;
+	}
+	$("lfoBtn")?.setAttribute("aria-pressed", ctx.view.motion.playing ? "true" : "false");
+	if (transportOnly) {
+		if (stageKnobRefs && ctx.palette) syncStageKnobsLive();
+		return;
 	}
 	const span = $("spanSelect");
 	if (span instanceof HTMLSelectElement) span.value = ctx.view.span;
@@ -9195,14 +9524,10 @@ function syncControls() {
 		["lensAgents", ctx.view.lens.agents],
 		["lensPrs", ctx.view.lens.prs]
 	]) $(id)?.setAttribute("aria-pressed", value ? "true" : "false");
-	$("lfoBtn")?.setAttribute("aria-pressed", ctx.view.motion.playing ? "true" : "false");
 	const mode = $("modeSelect");
 	if (mode instanceof HTMLSelectElement) mode.value = ctx.view.motion.mode;
 	const rate = $("rateSelect");
 	if (rate instanceof HTMLSelectElement) rate.value = String(ctx.view.motion.rate);
-	const slotCount = $("slotCount");
-	if (slotCount) slotCount.textContent = `32 slots`;
-	$("depthBtn")?.setAttribute("aria-pressed", ctx.view.depth ? "true" : "false");
 	const activeMode = !ctx.view.depth ? "2d" : ctx.browserOpen ? "browser" : ctx.view.rack ? "rack" : "stage";
 	$("modeRack")?.setAttribute("aria-pressed", activeMode === "rack" ? "true" : "false");
 	$("modeStage")?.setAttribute("aria-pressed", activeMode === "stage" ? "true" : "false");
@@ -10327,7 +10652,7 @@ function drawWave() {
 function drawPrRing(g, pr, x, top, bottom, P, view, width, yOverride) {
 	const entryY = yOverride !== void 0 ? yOverride : bottom - (bottom - top) * .1;
 	const color = view.lens.age ? ageColor(view.theme, pr.ageNorm) : P.open;
-	const radius = view.focusRef?.id === pr.ref.id ? 7.2 : 5.6;
+	const radius = view.focusRef === pr.ref.id ? 7.2 : 5.6;
 	g.save();
 	g.strokeStyle = color;
 	g.lineWidth = 1.5;
@@ -10974,6 +11299,7 @@ function renderBrowserGrid() {
 	lastBrowserSig = sig;
 	clear(host);
 	browserTiles = [];
+	invalidateCanvasSizes();
 	const all = catalogItems(ctx.model);
 	const cat = ctx.treeCategory;
 	const filtered = cat === "favorites" ? all.filter((it) => ctx.favorites.has(it.query)) : cat === "all" ? all : all.filter((it) => it.category === cat);
@@ -11105,6 +11431,8 @@ var LETTERS = [
 ];
 var rackCards = [];
 var lastSignature = "";
+var lastTelemetrySig = "";
+var windowMetricsCache = /* @__PURE__ */ new WeakMap();
 function label(index) {
 	return `OSC ${LETTERS[index] ?? index + 1}`;
 }
@@ -11139,23 +11467,50 @@ function computeWindowMetrics(query, endMs) {
 		agent: 0,
 		endMs
 	};
-	const search = searchCommits(ctx.model, query);
-	const win = windowFor(ctx.model, isoOf(endMs), ctx.view.span);
-	const slots = buildSlots(ctx.model, win, search.shas);
+	const model = ctx.model;
+	const span = ctx.view.span;
+	const bucketMs = Math.round(endMs / 6e4) * 6e4;
+	let byKey = windowMetricsCache.get(model);
+	if (!byKey) {
+		byKey = /* @__PURE__ */ new Map();
+		windowMetricsCache.set(model, byKey);
+	}
+	const key = `${span}|${query}|${bucketMs}`;
+	const hit = byKey.get(key);
+	if (hit) return hit;
+	const search = searchCommits(model, query);
+	const win = windowFor(model, isoOf(endMs), span);
+	const commitsList = model.doc.commits;
+	const times = model.commitTimeMs;
+	const shas = search.shas;
+	const startMs = win.startMs;
+	const winEnd = win.endMs;
 	let commits = 0;
 	let churn = 0;
 	let agent = 0;
-	for (const s of slots) {
-		commits += s.count;
-		churn += s.churn;
-		agent += s.agentCount;
+	for (let i = 0; i < commitsList.length; i++) {
+		const c = commitsList[i];
+		if (c.merge) continue;
+		const t = times ? times[i] : Date.parse(c.time);
+		if (t < startMs) continue;
+		if (t > winEnd) break;
+		if (shas && !shas.has(c.sha)) continue;
+		commits += 1;
+		churn += c.insertions + c.deletions;
+		if (c.author.kind === "agent") agent += 1;
 	}
-	return {
+	const result = {
 		commits,
 		churn,
 		agent,
-		endMs: win.endMs
+		endMs: winEnd
 	};
+	if (byKey.size >= 256) {
+		const oldest = byKey.keys().next().value;
+		if (oldest !== void 0) byKey.delete(oldest);
+	}
+	byKey.set(key, result);
+	return result;
 }
 function signedDelta(n) {
 	if (n > 0) return `+${n}`;
@@ -11168,11 +11523,23 @@ function signedChurn(n) {
 	return "0";
 }
 /** Update live comparison bars, diff deltas, timestamps and master toolbar without rebuilding DOM. */
-function syncRackTelemetry() {
+function syncRackTelemetry(force = false) {
 	if (!ctx.model || !ctx.view || !rackCards.length) return;
 	const sharedPos = liveWtPos();
 	const sharedMs = liveReadHeadMs();
 	const sharedPct = Math.round(sharedPos * 100);
+	const posKey = ctx.rackSync ? String(Math.round(sharedPos * 1e3)) : rackCards.map((c) => Math.round(cardWtPos(c) * 1e3)).join(",");
+	const sig = [
+		ctx.doc?.repo.id ?? "",
+		ctx.view.span,
+		ctx.view.query,
+		ctx.view.motion.playing ? 1 : 0,
+		ctx.rackSync ? 1 : 0,
+		rackCards.length,
+		posKey
+	].join("|");
+	if (!force && sig === lastTelemetrySig) return;
+	lastTelemetrySig = sig;
 	const stats = rackCards.map((card) => {
 		const pos = cardWtPos(card);
 		const ms = ctx.rackSync ? sharedMs : endMsAtWtPos(ctx.model, ctx.view.span, pos);
@@ -11250,7 +11617,7 @@ function syncRackTelemetry() {
 	}
 }
 /** Redraw the existing oscillator canvases and sync live WT POS telemetry without rebuilding DOM. */
-function drawRackFrames() {
+function drawRackFrames(forceTelemetry = false) {
 	for (const card of rackCards) {
 		const wtPos = cardWtPos(card);
 		drawModuleSurface(card.canvas, card.module, card.index, {
@@ -11258,7 +11625,7 @@ function drawRackFrames() {
 			wtPos
 		});
 	}
-	syncRackTelemetry();
+	syncRackTelemetry(forceTelemetry);
 }
 /** Wire master rack toolbar events once at boot. */
 function initRackBar() {
@@ -11318,12 +11685,14 @@ function renderRack() {
 	if (!rack || !ctx.view || !ctx.model || !ctx.palette) return;
 	const sig = rackSignature();
 	if (rackCards.length > 0 && lastSignature === sig && rack.children.length > 0) {
-		drawRackFrames();
+		drawRackFrames(true);
 		return;
 	}
 	clear(rack);
 	rackCards = [];
 	lastSignature = sig;
+	lastTelemetrySig = "";
+	invalidateCanvasSizes();
 	const countMods = ctx.view.modules.length;
 	rack.dataset.cols = String(Math.min(4, Math.max(1, countMods)));
 	ctx.view.modules.forEach((module, index) => {
@@ -11618,6 +11987,46 @@ function bandWidth() {
 	const host = document.getElementById("slots");
 	return (host ? host.getBoundingClientRect().width : 960) + 80;
 }
+var stripCells = [];
+var stripHost = null;
+function ensureStripCells(host) {
+	if (stripHost === host && stripCells.length === 32 && host.childElementCount === 32) return stripCells;
+	clear(host);
+	stripHost = host;
+	stripCells = new Array(32);
+	const fragment = document.createDocumentFragment();
+	for (let k = 0; k < 32; k++) {
+		const cell = document.createElement("button");
+		cell.type = "button";
+		cell.className = "slot";
+		cell.dataset.k = String(k);
+		const dateEl = el("span", "slot-date", "");
+		const meter = el("span", "slot-meter");
+		meter.setAttribute("aria-hidden", "true");
+		const ticks = new Array(8);
+		for (let i = 0; i < 8; i++) {
+			const tick = document.createElement("i");
+			meter.appendChild(tick);
+			ticks[i] = tick;
+		}
+		const countEl = el("span", "slot-count", "");
+		cell.appendChild(dateEl);
+		cell.appendChild(meter);
+		cell.appendChild(countEl);
+		fragment.appendChild(cell);
+		stripCells[k] = {
+			cell,
+			dateEl,
+			meter,
+			ticks,
+			countEl,
+			lastKey: ""
+		};
+	}
+	host.appendChild(fragment);
+	return stripCells;
+}
+var TICK_SHAPE = Array.from({ length: 8 }, (_, i) => Math.sin((i + .5) / 8 * Math.PI));
 function renderStrip() {
 	const host = document.getElementById("slots");
 	if (!host || !ctx.window || !ctx.view) return;
@@ -11627,46 +12036,51 @@ function renderStrip() {
 	host.style.setProperty("--slot-gap", `${geom.gap.toFixed(2)}px`);
 	host.style.gridTemplateColumns = `repeat(32, minmax(0, 1fr))`;
 	host.style.setProperty("--metric", ctx.view.depth && ctx.metric ? ctx.metric.color : "");
-	const focusK = ctx.focusCommit ? Math.max(0, Math.min(31, Math.floor((Date.parse(ctx.focusCommit.time) - ctx.window.startMs) / (ctx.window.slotMs || 1)))) : -1;
-	clear(host);
-	const fragment = document.createDocumentFragment();
+	const focusTime = ctx.focusCommit ? ctx.model?.commitTimeBySha?.get(ctx.focusCommit.sha) ?? Date.parse(ctx.focusCommit.time) : NaN;
+	const focusK = Number.isFinite(focusTime) ? Math.max(0, Math.min(31, Math.floor((focusTime - ctx.window.startMs) / (ctx.window.slotMs || 1)))) : -1;
+	const cells = ensureStripCells(host);
+	const agentLens = ctx.view.lens.agents;
 	for (let k = 0; k < 32; k++) {
 		const slot = active[k];
-		const cell = document.createElement("button");
-		cell.type = "button";
-		cell.className = "slot";
-		cell.dataset.k = String(k);
-		cell.dataset.x = slotX(k, geom).toFixed(3);
-		if (slot.count === 0) cell.disabled = true;
-		if (slot.agentCount > 0) cell.classList.add("is-agent");
-		if (ctx.view.lens.agents && slot.agentCount > 0) cell.classList.add("is-agent-lens");
-		if (k === focusK) cell.classList.add("is-focus");
+		const rec = cells[k];
+		const xStr = slotX(k, geom).toFixed(3);
+		const isFocus = k === focusK;
+		const hasAgent = slot.agentCount > 0;
+		const sha6 = slot.count === 1 && slot.newest ? shortSha(slot.newest.sha, 6) : "";
+		const cellKey = `${xStr}|${slot.startMs}|${slot.count}|${slot.churn}|${slot.level}|${slot.agentCount}|${agentLens ? 1 : 0}|${isFocus ? 1 : 0}|${sha6}`;
+		if (rec.lastKey === cellKey) continue;
+		rec.lastKey = cellKey;
+		const { cell, dateEl, meter, ticks, countEl } = rec;
+		cell.dataset.x = xStr;
+		cell.disabled = slot.count === 0;
+		cell.classList.toggle("is-agent", hasAgent);
+		cell.classList.toggle("is-agent-lens", agentLens && hasAgent);
+		cell.classList.toggle("is-focus", isFocus);
 		const label = `slot ${k + 1} of 32, ${dateMedium(slot.startMs)}, ${slot.count} commit${slot.count === 1 ? "" : "s"}, churn ${slot.churn}, level ${slot.level}` + (slot.agentCount ? `, ${slot.agentCount} agent commit${slot.agentCount === 1 ? "" : "s"}` : "");
 		cell.setAttribute("aria-label", label);
 		cell.title = slot.count > 0 ? `${label} — click for 3D beacon · double-click for diff` : label;
-		cell.appendChild(el("span", "slot-date", dateShort(slot.startMs)));
-		const meter = el("span", "slot-meter");
-		meter.setAttribute("aria-hidden", "true");
+		dateEl.textContent = dateShort(slot.startMs);
 		const norm = slot.level / 15;
 		meter.style.setProperty("--lvl", norm.toFixed(3));
+		const hasCommits = slot.count > 0;
 		for (let i = 0; i < 8; i++) {
-			const tick = document.createElement("i");
-			const waveShape = Math.sin((i + .5) / 8 * Math.PI);
-			const hPct = slot.count === 0 ? 6 : Math.max(14, Math.round((.25 + .75 * norm * waveShape) * 100));
+			const tick = ticks[i];
+			const hPct = hasCommits ? Math.max(14, Math.round((.25 + .75 * norm * TICK_SHAPE[i]) * 100)) : 6;
 			tick.style.height = `${hPct}%`;
-			if (slot.count > 0) tick.className = "on";
-			meter.appendChild(tick);
+			tick.className = hasCommits ? "on" : "";
 		}
-		cell.appendChild(meter);
-		const count = slot.count === 1 && slot.newest ? shortSha(slot.newest.sha, 6) : String(slot.count);
-		cell.appendChild(el("span", "slot-count", slot.count === 0 ? "·" : count));
-		fragment.appendChild(cell);
+		countEl.textContent = slot.count === 0 ? "·" : slot.count === 1 && sha6 ? sha6 : String(slot.count);
 	}
-	host.appendChild(fragment);
 	const mode = document.getElementById("stripMode");
-	if (mode) mode.textContent = ctx.view.depth ? `OVERVIEW · 32 SLICES · ${ctx.metric?.label ?? "all"} · DRAG TO SELECT` : `OVERVIEW · 32 SLOTS · ${ctx.view.span} · DRAG TO SELECT`;
+	if (mode) {
+		const nextMode = ctx.view.depth ? `OVERVIEW · 32 SLICES · ${ctx.metric?.label ?? "all"} · DRAG TO SELECT` : `OVERVIEW · 32 SLOTS · ${ctx.view.span} · DRAG TO SELECT`;
+		if (mode.textContent !== nextMode) mode.textContent = nextMode;
+	}
 	const range = document.getElementById("stripRange");
-	if (range) range.textContent = `${dateMedium(ctx.window.startMs)} – ${dateMedium(ctx.window.endMs)} UTC`;
+	if (range) {
+		const nextRange = `${dateMedium(ctx.window.startMs)} – ${dateMedium(ctx.window.endMs)} UTC`;
+		if (range.textContent !== nextRange) range.textContent = nextRange;
+	}
 }
 function initStrip() {
 	const host = document.getElementById("slots");
@@ -12044,6 +12458,8 @@ function initTension(nextHandlers) {
 *
 * Every commit string is written with textContent: subjects are untrusted.
 */
+var lastCommitCardKey = "";
+var lastTensionSummaryKey = "";
 function stat(text, className) {
 	return el("span", className || "", text);
 }
@@ -12100,6 +12516,9 @@ function renderCommitCard() {
 	const openDiff = document.getElementById("openDiffBtn");
 	if (!sha || !author || !subject || !stats || !copy) return;
 	const commit = ctx.focusCommit;
+	const key = `${ctx.doc?.repo.id ?? ""}|${commit?.sha ?? ""}`;
+	if (key === lastCommitCardKey) return;
+	lastCommitCardKey = key;
 	stats.replaceChildren();
 	author.replaceChildren();
 	if (!commit) {
@@ -12144,13 +12563,16 @@ function renderCommitCard() {
 function renderTensionSummary() {
 	const host = document.getElementById("tensionSummary");
 	if (!host) return;
+	const stale = ctx.prs.filter((pr) => pr.stale).length;
+	const max = ctx.prs.reduce((value, pr) => Math.max(value, pr.tension), 0);
+	const key = `${ctx.prs.length}|${stale}|${max.toFixed(2)}`;
+	if (key === lastTensionSummaryKey) return;
+	lastTensionSummaryKey = key;
 	host.replaceChildren();
 	if (!ctx.prs.length) {
 		host.textContent = "no open pull requests";
 		return;
 	}
-	const stale = ctx.prs.filter((pr) => pr.stale).length;
-	const max = ctx.prs.reduce((value, pr) => Math.max(value, pr.tension), 0);
 	host.appendChild(el("span", "", `tension ${max.toFixed(2)}`));
 	host.appendChild(el("span", "", `${ctx.prs.length} open`));
 	if (stale) host.appendChild(el("span", "risk", `${stale} stale`));
@@ -12296,7 +12718,15 @@ var SWATCH_TOKENS = [
 	"open",
 	"risk"
 ];
+var POD_SLICES = 18;
+var POD_SAMPLES = 64;
+var podFramePool = Array.from({ length: POD_SLICES }, () => new Float32Array(POD_SAMPLES));
+var podScanSlice = new Float32Array(POD_SAMPLES);
+var podProjX = new Float32Array(POD_SAMPLES);
+var podProjY = new Float32Array(POD_SAMPLES);
 var podCanvas = null;
+var podCachedW = 0;
+var podCachedH = 0;
 var configOpen = false;
 var podBuilt = false;
 var podClock = 0;
@@ -12332,14 +12762,24 @@ function tokenHex(tok) {
 	if (tok.startsWith("id")) return P.identity[Number(tok.slice(2))] ?? P.agent;
 	return P.agent;
 }
+function invalidateAgentPodSize() {
+	podCachedW = 0;
+	podCachedH = 0;
+}
 function fitCanvas(canvas) {
-	const rect = canvas.getBoundingClientRect();
 	const dpr = Math.min(window.devicePixelRatio || 1, 2);
-	const width = Math.max(1, Math.round(rect.width));
-	const height = Math.max(1, Math.round(rect.height));
-	if (canvas.width !== Math.round(width * dpr) || canvas.height !== Math.round(height * dpr)) {
-		canvas.width = Math.round(width * dpr);
-		canvas.height = Math.round(height * dpr);
+	if (podCachedW < 8 || podCachedH < 8) {
+		const rect = canvas.getBoundingClientRect();
+		podCachedW = Math.max(1, Math.round(rect.width));
+		podCachedH = Math.max(1, Math.round(rect.height));
+	}
+	const width = podCachedW;
+	const height = podCachedH;
+	const pxW = Math.round(width * dpr);
+	const pxH = Math.round(height * dpr);
+	if (canvas.width !== pxW || canvas.height !== pxH) {
+		canvas.width = pxW;
+		canvas.height = pxH;
 	}
 	const g = canvas.getContext("2d");
 	g.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -12355,7 +12795,11 @@ function drawAgentPodFrame(phaseSec = null) {
 	const P = ctx.palette;
 	const accent = resolveAgentColor();
 	const secondary = mixHex(accent, P.depth, .55);
-	const bright = mixHex(accent, P.handle, .42);
+	const bright = mixHex(accent, P.handle, .48);
+	const core = mixHex(accent, P.handle, .78);
+	const accentRgb = hexToRgbFast(accent);
+	const secondaryRgb = hexToRgbFast(secondary);
+	const brightRgb = hexToRgbFast(bright);
 	const phase = typeof phaseSec === "number" ? phaseSec : podClock;
 	const { g, width: w, height: h } = fitCanvas(podCanvas);
 	if (w < 8 || h < 8) return;
@@ -12367,83 +12811,122 @@ function drawAgentPodFrame(phaseSec = null) {
 	grad.addColorStop(1, rgba(P.bg, 0));
 	g.fillStyle = grad;
 	g.fillRect(0, 0, w, h);
-	const sliceCount = 18;
-	const sampleCount = 64;
-	const { frames, scanZ } = evaluateAgentSurface(ctx.agent, phase, sliceCount, sampleCount);
+	const sliceCount = POD_SLICES;
+	const sampleCount = POD_SAMPLES;
+	const { frames, scanZ } = evaluateAgentSurface(ctx.agent, phase, sliceCount, sampleCount, podFramePool);
+	sampleAgentSlice(frames, scanZ, podScanSlice);
 	const frontW = w - 48;
 	const backShrink = .22;
 	const baseBottom = h * .78;
 	const depthLift = h * .44;
 	const ampScale = h * .22;
-	const project = (u, z, val) => {
+	const invS = 1 / 63;
+	const invZ = 1 / 17;
+	const projectSlice = (z, wave) => {
 		const rowW = frontW * (1 - backShrink * z);
-		const x = (w - rowW) * .5 + (z - .5) * (w * .04) + u * rowW;
+		const left = (w - rowW) * .5 + (z - .5) * (w * .04);
 		const baseY = baseBottom - z * depthLift;
-		return [
-			x,
-			baseY - val * ampScale * (1 - .34 * z),
+		const scaleY = ampScale * (1 - .34 * z);
+		for (let s = 0; s < sampleCount; s++) {
+			podProjX[s] = left + s * invS * rowW;
+			podProjY[s] = baseY - wave[s] * scaleY;
+		}
+		return {
+			left,
+			right: left + rowW,
 			baseY
-		];
+		};
 	};
 	g.save();
 	g.strokeStyle = rgba(P.lineHi, .45);
 	g.lineWidth = .75;
-	const [blx, bly] = project(0, 1, 0);
-	const [brx, bry] = project(1, 1, 0);
-	const [flx, fly] = project(0, 0, 0);
-	const [frx, fry] = project(1, 0, 0);
+	const backW = frontW * .78;
+	const backLeft = (w - backW) * .5 + .5 * (w * .04);
+	const backY = baseBottom - depthLift;
+	const frontLeft = (w - frontW) * .5 - .5 * (w * .04);
 	g.beginPath();
-	g.moveTo(blx, bly);
-	g.lineTo(brx, bry);
-	g.lineTo(frx, fry);
-	g.lineTo(flx, fly);
+	g.moveTo(backLeft, backY);
+	g.lineTo(backLeft + backW, backY);
+	g.lineTo(frontLeft + frontW, baseBottom);
+	g.lineTo(frontLeft, baseBottom);
 	g.closePath();
 	g.stroke();
 	g.restore();
-	const scanIdx = Math.round(scanZ * 17);
-	for (let i = 17; i >= 0; i--) {
-		const z = i / 17;
-		const wave = frames[i];
-		const isScan = i === scanIdx;
-		const isFront = i === 0;
-		const col = mixHex(accent, secondary, z * .75);
+	const drawContinuousScanPlane = () => {
+		const { left, right, baseY } = projectSlice(scanZ, podScanSlice);
 		g.beginPath();
-		for (let s = 0; s < sampleCount; s++) {
-			const [x, y] = project(s / 63, z, wave[s]);
-			if (s === 0) g.moveTo(x, y);
-			else g.lineTo(x, y);
-		}
-		const [rx, , rBase] = project(1, z, 0);
-		const [lx, , lBase] = project(0, z, 0);
-		g.lineTo(rx, rBase);
-		g.lineTo(lx, lBase);
+		g.moveTo(podProjX[0], podProjY[0]);
+		for (let s = 1; s < sampleCount; s++) g.lineTo(podProjX[s], podProjY[s]);
+		g.lineTo(right, baseY);
+		g.lineTo(left, baseY);
 		g.closePath();
-		g.fillStyle = rgba(col, isScan ? .24 : isFront ? .16 : .055 + (1 - z) * .05);
+		g.fillStyle = rgbaMixRgb(accentRgb, brightRgb, .35, .22);
+		g.fill();
+		g.save();
+		g.lineJoin = "round";
+		g.lineCap = "round";
+		g.beginPath();
+		g.moveTo(podProjX[0], podProjY[0]);
+		for (let s = 1; s < sampleCount; s++) g.lineTo(podProjX[s], podProjY[s]);
+		g.globalCompositeOperation = "lighter";
+		g.strokeStyle = rgbaMixRgb(accentRgb, brightRgb, .4, .32);
+		g.lineWidth = 5.2;
+		g.stroke();
+		g.globalCompositeOperation = "source-over";
+		g.strokeStyle = bright;
+		g.lineWidth = 1.7;
+		g.stroke();
+		g.strokeStyle = rgba(core, .85);
+		g.lineWidth = .7;
+		g.stroke();
+		g.restore();
+	};
+	const scanInsertIdx = Math.floor(scanZ * 17);
+	let scanDrawn = false;
+	g.save();
+	g.lineJoin = "round";
+	g.lineCap = "round";
+	for (let i = 17; i >= 0; i--) {
+		const z = i * invZ;
+		const wave = frames[i];
+		const isFront = i === 0;
+		const dz = z - scanZ;
+		const prox = Math.exp(-dz * dz * 70);
+		const { left, right, baseY } = projectSlice(z, wave);
+		g.beginPath();
+		g.moveTo(podProjX[0], podProjY[0]);
+		for (let s = 1; s < sampleCount; s++) g.lineTo(podProjX[s], podProjY[s]);
+		g.lineTo(right, baseY);
+		g.lineTo(left, baseY);
+		g.closePath();
+		const fillAlpha = (isFront ? .14 : .05 + (1 - z) * .048) + prox * .08;
+		g.fillStyle = rgbaMixRgb(accentRgb, secondaryRgb, z * .75 * (1 - prox * .5), fillAlpha);
 		g.fill();
 		g.beginPath();
-		for (let s = 0; s < sampleCount; s++) {
-			const [x, y] = project(s / 63, z, wave[s]);
-			if (s === 0) g.moveTo(x, y);
-			else g.lineTo(x, y);
-		}
-		if (isScan) {
-			g.strokeStyle = bright;
-			g.lineWidth = 1.9;
-			g.shadowColor = rgba(accent, .75);
-			g.shadowBlur = 8;
-		} else if (isFront) {
+		g.moveTo(podProjX[0], podProjY[0]);
+		for (let s = 1; s < sampleCount; s++) g.lineTo(podProjX[s], podProjY[s]);
+		if (isFront) {
 			g.strokeStyle = accent;
-			g.lineWidth = 1.45;
-			g.shadowColor = rgba(accent, .45);
-			g.shadowBlur = 4;
+			g.lineWidth = 1.35 + prox * .35;
+			g.stroke();
+			g.globalCompositeOperation = "lighter";
+			g.strokeStyle = rgbaMixRgb(accentRgb, brightRgb, prox * .5, .22 + prox * .12);
+			g.lineWidth = 3.4;
+			g.stroke();
+			g.globalCompositeOperation = "source-over";
 		} else {
-			g.strokeStyle = rgba(col, .28 + (1 - z) * .42);
-			g.lineWidth = .9;
-			g.shadowBlur = 0;
+			const baseAlpha = .26 + (1 - z) * .4 + prox * .28;
+			g.strokeStyle = prox > .08 ? rgbaMixRgb(accentRgb, brightRgb, prox * .65, Math.min(.95, baseAlpha)) : rgbaMixRgb(accentRgb, secondaryRgb, z * .75, baseAlpha);
+			g.lineWidth = .85 + prox * .55;
+			g.stroke();
 		}
-		g.stroke();
-		g.shadowBlur = 0;
+		if (!scanDrawn && i <= scanInsertIdx) {
+			drawContinuousScanPlane();
+			scanDrawn = true;
+		}
 	}
+	if (!scanDrawn) drawContinuousScanPlane();
+	g.restore();
 }
 function stepAgentPodClock(phaseSec) {
 	podClock = phaseSec;
@@ -12710,6 +13193,7 @@ function renderAgentPod() {
 		podCanvas.className = "ap-canvas";
 		podCanvas.setAttribute("aria-label", `${cfg.name} oscillator (${cfg.formula}, ${cfg.activity})`);
 		screen.appendChild(podCanvas);
+		invalidateAgentPodSize();
 		const metaOverlay = el("div", "ap-screen-meta");
 		metaOverlay.appendChild(el("span", "ap-formula-tag", cfg.formula));
 		if (cfg.repo) metaOverlay.appendChild(el("span", "ap-repo-tag", cfg.repo));
@@ -12863,10 +13347,14 @@ var fresh = params.has("fresh");
 var staticMode = params.has("static");
 var phaseParam = Math.max(0, Math.min(100, Number(params.get("phase")) || 0));
 var selftest = params.has("selftest");
-var lfoRunning = false;
-var lfoLast = 0;
+var frameLoopRunning = false;
+var frameStart = 0;
+var frameLast = 0;
+var browserLast = 0;
+var mirrorLast = 0;
 var lfoAcc = 0;
 var lfoDir = 1;
+var wasPlaying = false;
 var saveTimer = 0;
 var hashTimer = 0;
 var resizeTimer = 0;
@@ -12964,80 +13452,85 @@ function boot() {
 	ctx.matchIndex = bootMatch;
 	if (!fresh) saveSeenSnapshot(model);
 }
-function ensureLfo() {
-	if (ctx.view?.motion.playing && !lfoRunning) {
-		lfoRunning = true;
-		lfoLast = performance.now();
-		lfoAcc = 0;
-		requestAnimationFrame(lfoFrame);
-	}
-}
 function advanceTransport() {
 	if (!ctx.view || !ctx.model) return;
 	const step = transportStep(ctx.model, ctx.view, lfoDir);
 	lfoDir = step.direction;
 	ctx.lfoDir = lfoDir;
-	setView(step.view);
-}
-function lfoFrame(now) {
-	if (!ctx.view?.motion.playing) {
-		lfoRunning = false;
-		ctx.depthPhase = 0;
-		return;
+	ctx.isTransportTick = true;
+	try {
+		setView(step.view);
+	} finally {
+		ctx.isTransportTick = false;
 	}
-	const interval = 1e3 / (ctx.reducedMotion ? 1 : ctx.view.motion.rate);
-	lfoAcc += Math.min(120, Math.max(0, now - lfoLast));
-	lfoLast = now;
-	let guard = 0;
-	while (lfoAcc >= interval && guard++ < 6) {
-		lfoAcc -= interval;
-		advanceTransport();
-		if (!ctx.view?.motion.playing) break;
-	}
-	if (ctx.view?.depth) ctx.depthPhase = ctx.view.motion.playing ? Math.max(0, Math.min(1, lfoAcc / interval)) : 0;
-	requestAnimationFrame(lfoFrame);
 }
-var ambientRunning = false;
-var ambientStart = 0;
-var ambientLast = 0;
-function needsAmbientLoop() {
+function needsFrameLoop() {
+	if (Boolean(ctx.view?.motion.playing)) return true;
+	if (staticMode || ctx.reducedMotion) return false;
 	const agentActive = ctx.agent.visible && !ctx.agent.minimized;
 	return Boolean(ctx.view?.depth || agentActive);
 }
-function ensureAmbient() {
-	if (!needsAmbientLoop() || staticMode || ctx.reducedMotion) {
-		ambientRunning = false;
+function ensureFrameLoop() {
+	if (!needsFrameLoop()) {
+		frameLoopRunning = false;
+		wasPlaying = false;
+		ctx.depthPhase = 0;
 		return;
 	}
-	if (ambientRunning) return;
-	ambientRunning = true;
-	ambientStart = performance.now();
-	ambientLast = 0;
-	requestAnimationFrame(ambientFrame);
+	if (frameLoopRunning) return;
+	frameLoopRunning = true;
+	const now = performance.now();
+	if (!frameStart) frameStart = now;
+	frameLast = now;
+	browserLast = 0;
+	lfoAcc = 0;
+	wasPlaying = Boolean(ctx.view?.motion.playing);
+	requestAnimationFrame(frameTick);
 }
-function ambientFrame(now) {
-	if (!needsAmbientLoop()) {
-		ambientRunning = false;
+function frameTick(now) {
+	if (!needsFrameLoop()) {
+		frameLoopRunning = false;
+		wasPlaying = false;
+		ctx.depthPhase = 0;
 		return;
 	}
-	ctx.morph = (now - ambientStart) / 1e3 + phaseParam;
+	const dtMs = Math.min(100, Math.max(0, now - frameLast));
+	const dtSec = Math.min(.05, Math.max(.001, dtMs / 1e3));
+	frameLast = now;
+	if (Boolean(ctx.view?.motion.playing)) {
+		if (!wasPlaying) {
+			lfoAcc = 0;
+			wasPlaying = true;
+		}
+		const interval = 1e3 / (ctx.reducedMotion ? 1 : ctx.view.motion.rate);
+		lfoAcc += dtMs;
+		let guard = 0;
+		while (lfoAcc >= interval && guard++ < 6) {
+			lfoAcc -= interval;
+			advanceTransport();
+			if (!ctx.view?.motion.playing) break;
+		}
+		ctx.depthPhase = ctx.view?.motion.playing ? Math.max(0, Math.min(1, lfoAcc / interval)) : 0;
+	} else if (wasPlaying) {
+		wasPlaying = false;
+		lfoAcc = 0;
+		ctx.depthPhase = 0;
+	}
+	stepSmoothWtPos(dtSec, staticMode || ctx.reducedMotion);
+	if (!staticMode && !ctx.reducedMotion) ctx.morph = (now - frameStart) / 1e3 + phaseParam;
 	if (ctx.depthScan >= 0 && now - ctx.depthScan >= 750) ctx.depthScan = -1;
-	if (ctx.agent.visible && !ctx.agent.minimized) stepAgentPodClock(ctx.morph);
+	if (!staticMode && !ctx.reducedMotion && ctx.agent.visible && !ctx.agent.minimized) stepAgentPodClock(ctx.morph);
 	if (!ctx.view?.depth || ctx.diffOpen) {} else if (ctx.browserOpen) {
-		if (now - ambientLast >= 33) {
+		if (ctx.browserHoverQuery !== null && now - browserLast >= 24) {
 			drawBrowserFrames();
-			ambientLast = now;
+			browserLast = now;
 		}
-	} else if (ctx.view.rack) {
-		if (now - ambientLast >= 25) {
-			drawRackFrames();
-			ambientLast = now;
-		}
-	} else {
+	} else if (ctx.view.rack) drawRackFrames();
+	else {
 		drawDepth();
 		syncStageKnobsLive();
 	}
-	requestAnimationFrame(ambientFrame);
+	requestAnimationFrame(frameTick);
 }
 function schedulePersist() {
 	if (fresh || !ctx.view) return;
@@ -13062,7 +13555,24 @@ function updateMirrors() {
 	if (node && state) node.textContent = JSON.stringify(state);
 }
 function renderAll() {
+	const transportTick = ctx.isTransportTick;
 	const mode = ctx.diffOpen ? "diff" : !ctx.view?.depth ? "wave" : ctx.browserOpen ? "browser" : ctx.view.rack ? "rack" : "depth";
+	if (transportTick) {
+		if (mode === "wave") drawWave();
+		renderStrip();
+		renderReadout();
+		syncControls(true);
+		const now = performance.now();
+		if (now - mirrorLast >= 250) {
+			mirrorLast = now;
+			updateMirrors();
+		}
+		ensureFrameLoop();
+		return;
+	}
+	invalidateCanvasSizes();
+	invalidateAgentPodSize();
+	if (staticMode || ctx.reducedMotion) stepSmoothWtPos(.0167, true);
 	const workspace = document.getElementById("workspace");
 	const tree = document.getElementById("gitTree");
 	if (tree) tree.hidden = !ctx.treeOpen;
@@ -13087,7 +13597,7 @@ function renderAll() {
 	if (mode === "diff") renderDiffView();
 	else if (mode === "rack") renderRack();
 	else if (mode === "browser") renderBrowserGrid();
-	else if (mode === "depth") drawDepth();
+	else if (mode === "depth") drawDepth(true);
 	else drawWave();
 	const expanded = mode === "depth";
 	for (const id of [
@@ -13111,10 +13621,9 @@ function renderAll() {
 	renderAgentPod();
 	renderTourCard();
 	if (staticMode && ctx.agent.visible && !ctx.agent.minimized) stepAgentPodClock(ctx.morph);
-	syncControls();
+	syncControls(false);
 	updateMirrors();
-	ensureLfo();
-	ensureAmbient();
+	ensureFrameLoop();
 	schedulePersist();
 	scheduleHash();
 }
@@ -14328,10 +14837,9 @@ select:focus {
   align-items: center;
   gap: 14px;
   padding: 8px 14px;
-  background: color-mix(in srgb, var(--panel) 84%, transparent);
+  background: color-mix(in srgb, var(--panel) 93%, var(--bg));
   border: 1px solid var(--line);
   border-radius: 10px;
-  backdrop-filter: blur(8px);
 }
 
 .stage-scan-btn {
@@ -14364,12 +14872,11 @@ select:focus {
   z-index: 12;
   width: 228px;
   padding: 7px 9px;
-  background: color-mix(in srgb, var(--panel) 94%, transparent);
+  background: color-mix(in srgb, var(--panel) 96%, var(--bg));
   border: 1px solid color-mix(in srgb, var(--open) 48%, var(--line-hi));
   border-radius: 6px;
   box-shadow: 0 8px 22px rgba(0, 0, 0, 0.55);
   pointer-events: none;
-  backdrop-filter: blur(8px);
 }
 
 .scope-tip-head {
@@ -16302,9 +16809,9 @@ select:focus {
     0 18px 46px rgba(0, 0, 0, 0.72),
     0 0 0 1px color-mix(in srgb, var(--agent-sw) 18%, transparent),
     0 0 24px color-mix(in srgb, var(--agent-sw) 16%, transparent);
-  backdrop-filter: blur(10px);
   overflow: hidden;
   user-select: none;
+  contain: layout style;
 }
 
 .agent-pod.is-minimized {
@@ -17356,8 +17863,6 @@ select:focus {
   <div class="repo-readout" id="repoOut">loading…</div>
 
   <div class="header-actions">
-    <button class="op sr-toggle" id="depthBtn" type="button" aria-pressed="false" hidden
-            title="Toggle 3D mode (D)">3D</button>
     <button class="op agent-trigger" id="agentBtn" type="button" aria-pressed="false"
             title="Toggle Floating Agent Oscillator avatar (A)">
       <span class="agent-btn-dot" aria-hidden="true"></span>
@@ -17528,7 +18033,6 @@ select:focus {
             <button class="op op-xs" id="prevBtn" type="button" aria-label="Older" title="Older (←)">◀</button>
             <button class="op op-xs" id="nextBtn" type="button" aria-label="Newer" title="Newer (→)">▶</button>
             <button class="op op-xs" id="nowBtn" type="button" title="Return to the newest commit">now</button>
-            <span class="excount" id="slotCount" hidden>32 slots</span>
           </div>
 
           <div class="group group-bottom" role="group" aria-label="lens and source">

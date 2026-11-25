@@ -371,107 +371,148 @@ function evalFormula(
   }
 }
 
-/** Compute the task-specific cyclic modulation envelope & scan cursor for a slice. */
-function activityModulation(
-  profile: AgentActivityProfile,
-  u: number,
-  z: number,
-  phaseSec: number
-): { amp: number; phaseShift: number; add: number } {
-  const t = phaseSec * profile.rate;
+/* Cached edge taper curves per sample count (avoids Math.pow(Math.sin(...)) in 60fps loops). */
+const taperCache = new Map<number, Float32Array>();
 
-  switch (profile.sweep) {
-    case "scan": {
-      // Steady radar pass sweeping left -> right across u
-      const head = (t * 0.32) % 1;
-      const dist = Math.min(Math.abs(u - head), 1 - Math.abs(u - head));
-      const beam = Math.exp(-dist * dist * 32);
-      return { amp: 0.65 + 0.5 * beam, phaseShift: t * 1.1, add: beam * 0.22 * Math.sin(z * Math.PI) };
-    }
-    case "sonar": {
-      // Twin ping pulses echoing across slices
-      const ping = (t * 0.48) % 1;
-      const ringA = Math.exp(-Math.pow(u - ping, 2) * 44);
-      const ringB = Math.exp(-Math.pow(u - (1 - ping), 2) * 44);
-      const pulse = Math.max(ringA, ringB);
-      return { amp: 0.55 + 0.65 * pulse, phaseShift: t * 1.85, add: pulse * 0.25 * Math.sin(t * 4) };
-    }
-    case "mirror": {
-      // Left/right opposing comparison halves around center u=0.5
-      const side = u < 0.5 ? 1 : -1;
-      const split = Math.exp(-Math.pow(u - 0.5, 2) * 60);
-      return {
-        amp: 0.85 * (1 - 0.45 * split),
-        phaseShift: side * t * 1.4,
-        add: side * 0.16 * Math.sin(t * 2.2 + z * Math.PI),
-      };
-    }
-    case "pulse": {
-      // Energetic rhythmic writing bursts
-      const burst = 0.72 + 0.38 * Math.pow(0.5 + 0.5 * Math.sin(t * 2.6 - u * 4), 2);
-      return { amp: burst, phaseShift: t * 2.1, add: 0.12 * Math.sin(u * Math.PI * 6 + t * 3) };
-    }
-    case "ascend": {
-      // Rising carrier cascade from back (z=1) toward front (z=0) and left->right
-      const crest = ((1 - z) * 0.65 + u * 0.35 - t * 0.55) % 1;
-      const wrap = crest < 0 ? crest + 1 : crest;
-      const lift = Math.exp(-Math.pow(wrap - 0.5, 2) * 26);
-      return { amp: 0.7 + 0.48 * lift, phaseShift: -t * 2.4, add: lift * 0.26 };
-    }
-    case "converge": {
-      // Two branch waves converging cleanly toward center (u = 0.5)
-      const prog = 0.5 * (1 - Math.cos(t * 1.5)); // 0..1..0
-      const sep = 0.36 * (1 - prog);
-      const g1 = Math.exp(-Math.pow(u - (0.5 - sep), 2) * 34);
-      const g2 = Math.exp(-Math.pow(u - (0.5 + sep), 2) * 34);
-      const lock = Math.max(g1, g2);
-      return { amp: 0.52 + 0.64 * lock, phaseShift: (u < 0.5 ? 1 : -1) * t * 1.3, add: lock * 0.2 };
-    }
-    case "bloom": {
-      // Outward radial ripple expanding from u = 0.5
-      const radius = (t * 0.45) % 0.55;
-      const d = Math.abs(Math.abs(u - 0.5) - radius);
-      const wave = Math.exp(-d * d * 75);
-      return { amp: 0.58 + 0.56 * wave, phaseShift: t * 1.6, add: wave * 0.22 };
-    }
-    case "orbit": {
-      // Smooth local <-> remote phase-locked oscillation
-      const orbit = 0.5 + 0.5 * Math.sin(t * 1.6 + z * Math.PI * 2);
-      return { amp: 0.65 + 0.42 * orbit, phaseShift: t * 1.45, add: (orbit - 0.5) * 0.2 };
-    }
-    case "breath":
-    default: {
-      const breath = 0.72 + 0.28 * Math.sin(t * 1.15 + z * 1.4);
-      return { amp: breath, phaseShift: t * 0.75, add: 0 };
-    }
+function getAgentTaper(n: number): Float32Array {
+  let arr = taperCache.get(n);
+  if (arr) return arr;
+  arr = new Float32Array(n);
+  for (let s = 1; s < n - 1; s++) {
+    const u = s / Math.max(1, n - 1);
+    arr[s] = Math.pow(Math.max(0, Math.sin(Math.PI * u)), 0.48);
   }
+  taperCache.set(n, arr);
+  return arr;
 }
 
 /**
  * Synthesize one normalized slice `Float32Array` in [-1, 1] for the Agent Oscillator.
+ * Optionally writes into a caller-supplied `out` buffer to avoid per-frame allocations.
  */
 export function evaluateAgentSlice(
   config: AgentOscConfig,
   zNorm: number,
   phaseSec: number,
-  sampleCount = 64
+  sampleCount = 64,
+  outBuf?: Float32Array
 ): Float32Array {
   const n = Math.max(16, Math.min(160, Math.round(sampleCount)));
   const z = clamp(zNorm, 0, 1);
   const profile = activityProfile(config.activity);
-  const out = new Float32Array(n);
+  const out = outBuf && outBuf.length === n ? outBuf : new Float32Array(n);
+  const taper = getAgentTaper(n);
+  const t = phaseSec * profile.rate;
+  const sweep = profile.sweep;
+  const energy = profile.energy;
+  const formula = config.formula;
+  const params = config.params;
+  const invN = 1 / Math.max(1, n - 1);
 
-  for (let s = 0; s < n; s++) {
-    if (s === 0 || s === n - 1) {
-      out[s] = 0;
-      continue;
+  out[0] = 0;
+  out[n - 1] = 0;
+
+  /* Precompute per-slice constants outside the sample loop */
+  const zSinPi = Math.sin(z * Math.PI);
+  const breathAmp = sweep === "breath" ? 0.72 + 0.28 * Math.sin(t * 1.15 + z * 1.4) : 0;
+  const orbitVal = sweep === "orbit" ? 0.5 + 0.5 * Math.sin(t * 1.6 + z * Math.PI * 2) : 0;
+  const scanHead = sweep === "scan" ? (t * 0.32) % 1 : 0;
+  const sonarPing = sweep === "sonar" ? (t * 0.48) % 1 : 0;
+  const sonarSin = sweep === "sonar" ? Math.sin(t * 4) : 0;
+  const mirrorSin = sweep === "mirror" ? Math.sin(t * 2.2 + z * Math.PI) : 0;
+  const convergeSep = sweep === "converge" ? 0.36 * (1 - 0.5 * (1 - Math.cos(t * 1.5))) : 0;
+  const bloomRadius = sweep === "bloom" ? (t * 0.45) % 0.55 : 0;
+
+  for (let s = 1; s < n - 1; s++) {
+    const u = s * invN;
+    let amp: number;
+    let phaseShift: number;
+    let add: number;
+
+    switch (sweep) {
+      case "scan": {
+        const diff = Math.abs(u - scanHead);
+        const dist = diff < 1 - diff ? diff : 1 - diff;
+        const beam = Math.exp(-dist * dist * 32);
+        amp = 0.65 + 0.5 * beam;
+        phaseShift = t * 1.1;
+        add = beam * 0.22 * zSinPi;
+        break;
+      }
+      case "sonar": {
+        const dA = u - sonarPing;
+        const dB = u - (1 - sonarPing);
+        const ringA = Math.exp(-dA * dA * 44);
+        const ringB = Math.exp(-dB * dB * 44);
+        const pulse = ringA > ringB ? ringA : ringB;
+        amp = 0.55 + 0.65 * pulse;
+        phaseShift = t * 1.85;
+        add = pulse * 0.25 * sonarSin;
+        break;
+      }
+      case "mirror": {
+        const side = u < 0.5 ? 1 : -1;
+        const du = u - 0.5;
+        const split = Math.exp(-du * du * 60);
+        amp = 0.85 * (1 - 0.45 * split);
+        phaseShift = side * t * 1.4;
+        add = side * 0.16 * mirrorSin;
+        break;
+      }
+      case "pulse": {
+        const base = 0.5 + 0.5 * Math.sin(t * 2.6 - u * 4);
+        amp = 0.72 + 0.38 * base * base;
+        phaseShift = t * 2.1;
+        add = 0.12 * Math.sin(u * Math.PI * 6 + t * 3);
+        break;
+      }
+      case "ascend": {
+        const crest = ((1 - z) * 0.65 + u * 0.35 - t * 0.55) % 1;
+        const wrap = crest < 0 ? crest + 1 : crest;
+        const dw = wrap - 0.5;
+        const lift = Math.exp(-dw * dw * 26);
+        amp = 0.7 + 0.48 * lift;
+        phaseShift = -t * 2.4;
+        add = lift * 0.26;
+        break;
+      }
+      case "converge": {
+        const d1 = u - (0.5 - convergeSep);
+        const d2 = u - (0.5 + convergeSep);
+        const g1 = Math.exp(-d1 * d1 * 34);
+        const g2 = Math.exp(-d2 * d2 * 34);
+        const lock = g1 > g2 ? g1 : g2;
+        amp = 0.52 + 0.64 * lock;
+        phaseShift = (u < 0.5 ? 1 : -1) * t * 1.3;
+        add = lock * 0.2;
+        break;
+      }
+      case "bloom": {
+        const d = Math.abs(Math.abs(u - 0.5) - bloomRadius);
+        const wave = Math.exp(-d * d * 75);
+        amp = 0.58 + 0.56 * wave;
+        phaseShift = t * 1.6;
+        add = wave * 0.22;
+        break;
+      }
+      case "orbit": {
+        amp = 0.65 + 0.42 * orbitVal;
+        phaseShift = t * 1.45;
+        add = (orbitVal - 0.5) * 0.2;
+        break;
+      }
+      case "breath":
+      default: {
+        amp = breathAmp;
+        phaseShift = t * 0.75;
+        add = 0;
+        break;
+      }
     }
-    const u = s / Math.max(1, n - 1);
-    const taper = Math.pow(Math.max(0, Math.sin(Math.PI * u)), 0.48);
-    const mod = activityModulation(profile, u, z, phaseSec);
-    const raw = evalFormula(config.formula, config.params, u, z, mod.phaseShift);
-    const val = (raw * mod.amp * profile.energy + mod.add) * taper;
-    out[s] = clamp(val, -1, 1);
+
+    const raw = evalFormula(formula, params, u, z, phaseShift);
+    const val = (raw * amp * energy + add) * taper[s];
+    out[s] = val < -1 ? -1 : val > 1 ? 1 : val;
   }
   return out;
 }
@@ -485,23 +526,51 @@ export interface AgentSurfaceFrame {
 
 /**
  * Build a complete stack of miniature 3D slices for the Floating Agent Oscillator.
+ * Optionally reuses a preallocated `framePool` to eliminate 60fps typed-array churn.
  */
 export function evaluateAgentSurface(
   config: AgentOscConfig,
   phaseSec: number,
   sliceCount = 18,
-  sampleCount = 64
+  sampleCount = 64,
+  framePool?: Float32Array[]
 ): AgentSurfaceFrame {
   const count = Math.max(6, Math.min(36, Math.round(sliceCount)));
   const profile = activityProfile(config.activity);
-  const frames: Float32Array[] = [];
+  const frames: Float32Array[] =
+    framePool && framePool.length === count ? framePool : new Array<Float32Array>(count);
   for (let i = 0; i < count; i++) {
     const z = count > 1 ? i / (count - 1) : 0;
-    frames.push(evaluateAgentSlice(config, z, phaseSec, sampleCount));
+    frames[i] = evaluateAgentSlice(config, z, phaseSec, sampleCount, frames[i]);
   }
   const scanZ =
     profile.sweep === "ascend"
       ? 1 - ((phaseSec * profile.rate * 0.28) % 1)
       : 0.5 - 0.5 * Math.cos(phaseSec * profile.rate * 0.85);
   return { frames, scanZ: clamp(scanZ, 0, 1), profile };
+}
+
+/**
+ * Continuously sample an interpolated slice at any floating-point `zNorm` in [0, 1]
+ * across an already-evaluated AgentSurfaceFrame (zero extra trig, fluid Z-travel).
+ */
+export function sampleAgentSlice(
+  frames: Float32Array[],
+  zNorm: number,
+  outBuf?: Float32Array
+): Float32Array {
+  const count = frames.length;
+  const n = count > 0 ? frames[0].length : 0;
+  const out = outBuf && outBuf.length === n ? outBuf : new Float32Array(n);
+  if (count === 0 || n === 0) return out;
+  const pos = clamp(zNorm, 0, 1) * (count - 1);
+  const i0 = Math.min(count - 1, Math.floor(pos));
+  const i1 = Math.min(count - 1, i0 + 1);
+  const frac = pos - i0;
+  const f0 = frames[i0];
+  const f1 = frames[i1];
+  for (let s = 0; s < n; s++) {
+    out[s] = f0[s] + (f1[s] - f0[s]) * frac;
+  }
+  return out;
 }

@@ -5,11 +5,14 @@
  */
 
 import { ctx } from "../app.ts";
-import { dateFull, dateShort, timeFull } from "../core/samples.ts";
+import { dateShort, timeFull } from "../core/samples.ts";
 import { wtPosOf } from "../core/view.ts";
 import { openDiffView } from "../ui/diff.js";
 import { copyText } from "../ui/status.ts";
 import { el, shortSha } from "../ui/dom.js";
+
+let lastCommitCardKey = "";
+let lastTensionSummaryKey = "";
 
 function stat(text, className) {
   return el("span", className || "", text);
@@ -100,6 +103,10 @@ function renderCommitCard() {
   if (!sha || !author || !subject || !stats || !copy) return;
 
   const commit = ctx.focusCommit;
+  const key = `${ctx.doc?.repo.id ?? ""}|${commit?.sha ?? ""}`;
+  if (key === lastCommitCardKey) return;
+  lastCommitCardKey = key;
+
   stats.replaceChildren();
   author.replaceChildren();
 
@@ -153,13 +160,17 @@ function renderCommitCard() {
 function renderTensionSummary() {
   const host = document.getElementById("tensionSummary");
   if (!host) return;
+  const stale = ctx.prs.filter((pr) => pr.stale).length;
+  const max = ctx.prs.reduce((value, pr) => Math.max(value, pr.tension), 0);
+  const key = `${ctx.prs.length}|${stale}|${max.toFixed(2)}`;
+  if (key === lastTensionSummaryKey) return;
+  lastTensionSummaryKey = key;
+
   host.replaceChildren();
   if (!ctx.prs.length) {
     host.textContent = "no open pull requests";
     return;
   }
-  const stale = ctx.prs.filter((pr) => pr.stale).length;
-  const max = ctx.prs.reduce((value, pr) => Math.max(value, pr.tension), 0);
   host.appendChild(el("span", "", `tension ${max.toFixed(2)}`));
   host.appendChild(el("span", "", `${ctx.prs.length} open`));
   if (stale) host.appendChild(el("span", "risk", `${stale} stale`));
@@ -180,10 +191,4 @@ export function initReadout() {
       if (ctx.focusCommit) openDiffView(ctx.focusCommit);
     });
   }
-}
-
-export function versionLabel(model, index, stops) {
-  const stop = stops[index];
-  if (!stop) return "—";
-  return `${stop.label} · ${dateFull(stop.timeMs)}`;
 }

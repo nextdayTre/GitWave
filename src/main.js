@@ -27,7 +27,13 @@ import {
   saveSeenSnapshot,
 } from "./state/autosave.ts";
 import { drawWave } from "./render/canvas.js";
-import { drawDepth, initDepthOrbit, initScope2d } from "./render/depth.js";
+import {
+  drawDepth,
+  initDepthOrbit,
+  initScope2d,
+  invalidateCanvasSizes,
+  stepSmoothWtPos,
+} from "./render/depth.js";
 import { drawRackFrames, initRackBar, renderRack } from "./render/rack.js";
 import { initCanvasPointer, initStrip, renderStrip } from "./render/strip.js";
 import { drawTension, initTension } from "./render/tension.js";
@@ -38,7 +44,12 @@ import { initHelp, openHelp } from "./ui/help.js";
 import { initControls, syncControls, syncStageKnobsLive } from "./ui/controls.js";
 import { drawBrowserFrames, renderBrowserGrid, renderTree } from "./ui/browser.js";
 import { renderDiffView } from "./ui/diff.js";
-import { initAgentPod, renderAgentPod, stepAgentPodClock } from "./ui/agent-pod.js";
+import {
+  initAgentPod,
+  invalidateAgentPodSize,
+  renderAgentPod,
+  stepAgentPodClock,
+} from "./ui/agent-pod.js";
 import { renderTourCard, startTour } from "./ui/tour.js";
 import { initKeyboard } from "./ui/keyboard.js";
 import { announce } from "./ui/status.ts";
@@ -49,10 +60,14 @@ const staticMode = params.has("static");
 const phaseParam = Math.max(0, Math.min(100, Number(params.get("phase")) || 0));
 const selftest = params.has("selftest");
 
-let lfoRunning = false;
-let lfoLast = 0;
+let frameLoopRunning = false;
+let frameStart = 0;
+let frameLast = 0;
+let browserLast = 0;
+let mirrorLast = 0;
 let lfoAcc = 0;
 let lfoDir = 1;
+let wasPlaying = false;
 let saveTimer = 0;
 let hashTimer = 0;
 let resizeTimer = 0;
@@ -163,93 +178,108 @@ function boot() {
   if (!fresh) saveSeenSnapshot(model);
 }
 
-function ensureLfo() {
-  if (ctx.view?.motion.playing && !lfoRunning) {
-    lfoRunning = true;
-    lfoLast = performance.now();
-    lfoAcc = 0;
-    requestAnimationFrame(lfoFrame);
-  }
-}
-
 function advanceTransport() {
   if (!ctx.view || !ctx.model) return;
   const step = transportStep(ctx.model, ctx.view, lfoDir);
   lfoDir = step.direction;
   ctx.lfoDir = lfoDir;
-  setView(step.view);
+  ctx.isTransportTick = true;
+  try {
+    setView(step.view);
+  } finally {
+    ctx.isTransportTick = false;
+  }
 }
 
-function lfoFrame(now) {
-  if (!ctx.view?.motion.playing) {
-    lfoRunning = false;
-    ctx.depthPhase = 0;
-    return;
-  }
-  const rate = ctx.reducedMotion ? 1 : ctx.view.motion.rate;
-  const interval = 1000 / rate;
-  lfoAcc += Math.min(120, Math.max(0, now - lfoLast));
-  lfoLast = now;
-  let guard = 0;
-  while (lfoAcc >= interval && guard++ < 6) {
-    lfoAcc -= interval;
-    advanceTransport();
-    if (!ctx.view?.motion.playing) break;
-  }
-  if (ctx.view?.depth) {
-    ctx.depthPhase = ctx.view.motion.playing ? Math.max(0, Math.min(1, lfoAcc / interval)) : 0;
-  }
-  requestAnimationFrame(lfoFrame);
-}
-
-let ambientRunning = false;
-let ambientStart = 0;
-let ambientLast = 0;
-
-function needsAmbientLoop() {
+function needsFrameLoop() {
+  const playing = Boolean(ctx.view?.motion.playing);
+  if (playing) return true;
+  if (staticMode || ctx.reducedMotion) return false;
   const agentActive = ctx.agent.visible && !ctx.agent.minimized;
   return Boolean(ctx.view?.depth || agentActive);
 }
 
-function ensureAmbient() {
-  if (!needsAmbientLoop() || staticMode || ctx.reducedMotion) {
-    ambientRunning = false;
+function ensureFrameLoop() {
+  if (!needsFrameLoop()) {
+    frameLoopRunning = false;
+    wasPlaying = false;
+    ctx.depthPhase = 0;
     return;
   }
-  if (ambientRunning) return;
-  ambientRunning = true;
-  ambientStart = performance.now();
-  ambientLast = 0;
-  requestAnimationFrame(ambientFrame);
+  if (frameLoopRunning) return;
+  frameLoopRunning = true;
+  const now = performance.now();
+  if (!frameStart) frameStart = now;
+  frameLast = now;
+  browserLast = 0;
+  lfoAcc = 0;
+  wasPlaying = Boolean(ctx.view?.motion.playing);
+  requestAnimationFrame(frameTick);
 }
 
-function ambientFrame(now) {
-  if (!needsAmbientLoop()) {
-    ambientRunning = false;
+function frameTick(now) {
+  if (!needsFrameLoop()) {
+    frameLoopRunning = false;
+    wasPlaying = false;
+    ctx.depthPhase = 0;
     return;
   }
-  ctx.morph = (now - ambientStart) / 1000 + phaseParam;
+
+  const dtMs = Math.min(100, Math.max(0, now - frameLast));
+  const dtSec = Math.min(0.05, Math.max(0.001, dtMs / 1000));
+  frameLast = now;
+
+  /* 1. Unified LFO transport step (phase-locked with canvas rendering — zero double-rAF) */
+  const playing = Boolean(ctx.view?.motion.playing);
+  if (playing) {
+    if (!wasPlaying) {
+      lfoAcc = 0;
+      wasPlaying = true;
+    }
+    const rate = ctx.reducedMotion ? 1 : ctx.view.motion.rate;
+    const interval = 1000 / rate;
+    lfoAcc += dtMs;
+    let guard = 0;
+    while (lfoAcc >= interval && guard++ < 6) {
+      lfoAcc -= interval;
+      advanceTransport();
+      if (!ctx.view?.motion.playing) break;
+    }
+    ctx.depthPhase = ctx.view?.motion.playing ? Math.max(0, Math.min(1, lfoAcc / interval)) : 0;
+  } else if (wasPlaying) {
+    wasPlaying = false;
+    lfoAcc = 0;
+    ctx.depthPhase = 0;
+  }
+
+  /* 2. Smoothly damped visual WT POS + ambient morph clock */
+  stepSmoothWtPos(dtSec, staticMode || ctx.reducedMotion);
+  if (!staticMode && !ctx.reducedMotion) {
+    ctx.morph = (now - frameStart) / 1000 + phaseParam;
+  }
   if (ctx.depthScan >= 0 && now - ctx.depthScan >= 750) ctx.depthScan = -1;
-  if (ctx.agent.visible && !ctx.agent.minimized) {
+
+  /* 3. Floating Agent Oscillator (native 60fps, continuous Z scan) */
+  if (!staticMode && !ctx.reducedMotion && ctx.agent.visible && !ctx.agent.minimized) {
     stepAgentPodClock(ctx.morph);
   }
+
+  /* 4. Primary 3D wavetable viewport (native 60fps — no 25ms Rack throttle!) */
   if (!ctx.view?.depth || ctx.diffOpen) {
     /* Pause 3D stage canvas redraws while in 2D or reading commits/diffs */
   } else if (ctx.browserOpen) {
-    if (now - ambientLast >= 33) {
+    if (ctx.browserHoverQuery !== null && now - browserLast >= 24) {
       drawBrowserFrames();
-      ambientLast = now;
+      browserLast = now;
     }
   } else if (ctx.view.rack) {
-    if (now - ambientLast >= 25) {
-      drawRackFrames();
-      ambientLast = now;
-    }
+    drawRackFrames();
   } else {
     drawDepth();
     syncStageKnobsLive();
   }
-  requestAnimationFrame(ambientFrame);
+
+  requestAnimationFrame(frameTick);
 }
 
 function schedulePersist() {
@@ -280,6 +310,7 @@ function updateMirrors() {
 }
 
 function renderAll() {
+  const transportTick = ctx.isTransportTick;
   const mode = ctx.diffOpen
     ? "diff"
     : !ctx.view?.depth
@@ -289,6 +320,27 @@ function renderAll() {
         : ctx.view.rack
           ? "rack"
           : "depth";
+
+  /* Fast path for high-frequency LFO transport steps: skip rebuilding static DOM panels */
+  if (transportTick) {
+    if (mode === "wave") drawWave();
+    renderStrip();
+    renderReadout();
+    syncControls(true);
+    const now = performance.now();
+    if (now - mirrorLast >= 250) {
+      mirrorLast = now;
+      updateMirrors();
+    }
+    ensureFrameLoop();
+    return;
+  }
+
+  invalidateCanvasSizes();
+  invalidateAgentPodSize();
+  if (staticMode || ctx.reducedMotion) {
+    stepSmoothWtPos(0.0167, true);
+  }
 
   const workspace = document.getElementById("workspace");
   const tree = document.getElementById("gitTree");
@@ -319,7 +371,7 @@ function renderAll() {
   if (mode === "diff") renderDiffView();
   else if (mode === "rack") renderRack();
   else if (mode === "browser") renderBrowserGrid();
-  else if (mode === "depth") drawDepth();
+  else if (mode === "depth") drawDepth(true);
   else drawWave();
 
   const expanded = mode === "depth";
@@ -350,10 +402,9 @@ function renderAll() {
   if (staticMode && ctx.agent.visible && !ctx.agent.minimized) {
     stepAgentPodClock(ctx.morph);
   }
-  syncControls();
+  syncControls(false);
   updateMirrors();
-  ensureLfo();
-  ensureAmbient();
+  ensureFrameLoop();
   schedulePersist();
   scheduleHash();
 }

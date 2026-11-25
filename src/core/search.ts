@@ -130,32 +130,56 @@ function matchToken(model: Model, commit: Commit, token: SearchToken): boolean {
       return false;
     case "after": {
       const ms = Date.parse(token.value.length === 10 ? `${token.value}T00:00:00Z` : token.value);
-      return Number.isFinite(ms) ? Date.parse(commit.time) >= ms : false;
+      const ct = model.commitTimeBySha?.get(commit.sha) ?? Date.parse(commit.time);
+      return Number.isFinite(ms) ? ct >= ms : false;
     }
     case "before": {
       const ms = Date.parse(token.value.length === 10 ? `${token.value}T23:59:59Z` : token.value);
-      return Number.isFinite(ms) ? Date.parse(commit.time) <= ms : false;
+      const ct = model.commitTimeBySha?.get(commit.sha) ?? Date.parse(commit.time);
+      return Number.isFinite(ms) ? ct <= ms : false;
     }
     default:
       return textOf(commit, refs).includes(token.value);
   }
 }
 
+/* Per-frozen-model memoization so render loops never re-scan commits for identical queries. */
+const searchCache = new WeakMap<Model, Map<string, SearchState>>();
+const MAX_SEARCH_CACHE = 96;
+const EMPTY_SEARCH: SearchState = Object.freeze({
+  query: "",
+  tokens: [],
+  shas: null,
+  matches: [],
+  count: 0,
+  error: null,
+});
+
 /** Parse and run a query. Never throws; a bad token simply matches nothing. */
 export function searchCommits(model: Model, raw: string): SearchState {
   const query = String(raw ?? "").trim().slice(0, MAX_QUERY);
-  if (!query) {
-    return { query: "", tokens: [], shas: null, matches: [], count: 0, error: null };
+  if (!query) return EMPTY_SEARCH;
+
+  let byQuery = searchCache.get(model);
+  if (!byQuery) {
+    byQuery = new Map<string, SearchState>();
+    searchCache.set(model, byQuery);
   }
+  const hit = byQuery.get(query);
+  if (hit) return hit;
+
   const tokens = tokenize(query);
   const matches: Commit[] = [];
   for (const commit of model.doc.commits) {
     if (tokens.every((token) => matchToken(model, commit, token))) matches.push(commit);
   }
+  const timeBySha = model.commitTimeBySha;
   matches.sort(
-    (a, b) => Date.parse(a.time) - Date.parse(b.time) || a.sha.localeCompare(b.sha)
+    (a, b) =>
+      (timeBySha?.get(a.sha) ?? Date.parse(a.time)) -
+        (timeBySha?.get(b.sha) ?? Date.parse(b.time)) || a.sha.localeCompare(b.sha)
   );
-  return {
+  const result: SearchState = {
     query,
     tokens,
     shas: new Set(matches.map((commit) => commit.sha)),
@@ -163,6 +187,12 @@ export function searchCommits(model: Model, raw: string): SearchState {
     count: matches.length,
     error: null,
   };
+  if (byQuery.size >= MAX_SEARCH_CACHE) {
+    const oldest = byQuery.keys().next().value;
+    if (oldest !== undefined) byQuery.delete(oldest);
+  }
+  byQuery.set(query, result);
+  return result;
 }
 
 /** The human-readable summary shown next to the find field. */

@@ -373,19 +373,34 @@ export function buildModel(doc: RepoDoc): Model {
   const commitsByRef = new Map<string, Commit[]>();
   const refsById = new Map<string, GitRef>();
   const commitBySha = new Map<string, Commit>();
+  const commitTimeMs = new Float64Array(doc.commits.length);
+  const commitTimeBySha = new Map<string, number>();
+  const refTipMs = new Map<string, number>();
+  const refCreatedMs = new Map<string, number>();
+
   for (const ref of doc.refs) {
     refsById.set(ref.id, ref);
     commitsByRef.set(ref.id, []);
+    refCreatedMs.set(ref.id, Date.parse(ref.createdAt));
   }
-  for (const commit of doc.commits) {
+  for (let i = 0; i < doc.commits.length; i++) {
+    const commit = doc.commits[i];
+    const ms = Date.parse(commit.time);
+    commitTimeMs[i] = ms;
+    commitTimeBySha.set(commit.sha, ms);
     commitBySha.set(commit.sha, commit);
     for (const refId of commit.refs) {
       const list = commitsByRef.get(refId);
       if (list) list.push(commit);
     }
   }
-  for (const list of commitsByRef.values()) {
-    list.sort((a, b) => Date.parse(a.time) - Date.parse(b.time));
+  for (const [refId, list] of commitsByRef.entries()) {
+    list.sort((a, b) => (commitTimeBySha.get(a.sha) ?? 0) - (commitTimeBySha.get(b.sha) ?? 0));
+    const last = list[list.length - 1];
+    refTipMs.set(
+      refId,
+      last ? commitTimeBySha.get(last.sha) ?? Date.parse(last.time) : refCreatedMs.get(refId) ?? 0
+    );
   }
   return {
     doc,
@@ -395,6 +410,10 @@ export function buildModel(doc: RepoDoc): Model {
     commitsByRef,
     refsById,
     tagsByTime: [...doc.tags].sort((a, b) => Date.parse(a.time) - Date.parse(b.time)),
+    commitTimeMs,
+    commitTimeBySha,
+    refTipMs,
+    refCreatedMs,
   };
 }
 

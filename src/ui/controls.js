@@ -13,7 +13,7 @@ import {
   requestRender,
   setView,
 } from "../app.ts";import { buildModel, parseDoc } from "../core/model.ts";
-import { SLOT_COUNT, clamp, dateFull } from "../core/samples.ts";
+import { clamp, dateFull } from "../core/samples.ts";
 import {
   activeStopIndex,
   addModules,
@@ -82,8 +82,11 @@ export function syncStageKnobsLive() {
   stageKnobRefs.pos.setValue(pos, pct >= 100 ? "NOW" : `${pct}%`);
   if (stageKnobRefs.scanBtn) {
     const playing = ctx.view.motion.playing;
-    stageKnobRefs.scanBtn.setAttribute("aria-pressed", playing ? "true" : "false");
-    stageKnobRefs.scanBtn.textContent = playing ? "⏸ LFO" : "▶ LFO";
+    const pressed = playing ? "true" : "false";
+    if (stageKnobRefs.scanBtn.getAttribute("aria-pressed") !== pressed) {
+      stageKnobRefs.scanBtn.setAttribute("aria-pressed", pressed);
+      stageKnobRefs.scanBtn.textContent = playing ? "⏸ LFO" : "▶ LFO";
+    }
   }
 }
 
@@ -401,7 +404,6 @@ export function initControls() {
     });
   }
 
-  $("depthBtn")?.addEventListener("click", toggleDepth);
   $("modeRack")?.addEventListener("click", () => setUiMode("rack"));
   $("modeStage")?.addEventListener("click", () => setUiMode("stage"));
   $("modeBrowser")?.addEventListener("click", () => setUiMode("browser"));
@@ -516,19 +518,28 @@ export function initControls() {
   });
 }
 
-export function syncControls() {
+export function syncControls(transportOnly = false) {
   if (!ctx.model || !ctx.view) return;
   const stops = stopsFor(ctx.model);
   const index = activeStopIndex(ctx.model, ctx.view);
   const version = $("version");
   const versionOut = $("versionOut");
   if (version instanceof HTMLInputElement) {
-    version.max = String(Math.max(0, stops.length - 1));
-    version.value = String(index);
+    const maxStr = String(Math.max(0, stops.length - 1));
+    const idxStr = String(index);
+    if (version.max !== maxStr) version.max = maxStr;
+    if (version.value !== idxStr) version.value = idxStr;
   }
   if (versionOut) {
     const stop = stops[index];
-    versionOut.textContent = stop ? `${stop.label} · ${dateFull(stop.timeMs)}` : "—";
+    const label = stop ? `${stop.label} · ${dateFull(stop.timeMs)}` : "—";
+    if (versionOut.textContent !== label) versionOut.textContent = label;
+  }
+
+  $("lfoBtn")?.setAttribute("aria-pressed", ctx.view.motion.playing ? "true" : "false");
+  if (transportOnly) {
+    if (stageKnobRefs && ctx.palette) syncStageKnobsLive();
+    return;
   }
 
   const span = $("spanSelect");
@@ -559,16 +570,10 @@ export function syncControls() {
     $(id)?.setAttribute("aria-pressed", value ? "true" : "false");
   }
 
-  $("lfoBtn")?.setAttribute("aria-pressed", ctx.view.motion.playing ? "true" : "false");
   const mode = $("modeSelect");
   if (mode instanceof HTMLSelectElement) mode.value = ctx.view.motion.mode;
   const rate = $("rateSelect");
   if (rate instanceof HTMLSelectElement) rate.value = String(ctx.view.motion.rate);
-
-  const slotCount = $("slotCount");
-  if (slotCount) slotCount.textContent = `${SLOT_COUNT} slots`;
-
-  $("depthBtn")?.setAttribute("aria-pressed", ctx.view.depth ? "true" : "false");
 
   const activeMode = !ctx.view.depth
     ? "2d"

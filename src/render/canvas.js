@@ -335,7 +335,7 @@ function drawPrRing(g, pr, x, top, bottom, P, view, width, yOverride) {
   const entryY =
     yOverride !== undefined ? yOverride : bottom - (bottom - top) * 0.1;
   const color = view.lens.age ? ageColor(view.theme, pr.ageNorm) : P.open;
-  const focused = view.focusRef?.id === pr.ref.id;
+  const focused = view.focusRef === pr.ref.id;
   const radius = focused ? 7.2 : 5.6;
   g.save();
   g.strokeStyle = color;

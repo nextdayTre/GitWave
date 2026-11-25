@@ -1093,10 +1093,9 @@ select:focus {
   align-items: center;
   gap: 14px;
   padding: 8px 14px;
-  background: color-mix(in srgb, var(--panel) 84%, transparent);
+  background: color-mix(in srgb, var(--panel) 93%, var(--bg));
   border: 1px solid var(--line);
   border-radius: 10px;
-  backdrop-filter: blur(8px);
 }
 
 .stage-scan-btn {
@@ -1129,12 +1128,11 @@ select:focus {
   z-index: 12;
   width: 228px;
   padding: 7px 9px;
-  background: color-mix(in srgb, var(--panel) 94%, transparent);
+  background: color-mix(in srgb, var(--panel) 96%, var(--bg));
   border: 1px solid color-mix(in srgb, var(--open) 48%, var(--line-hi));
   border-radius: 6px;
   box-shadow: 0 8px 22px rgba(0, 0, 0, 0.55);
   pointer-events: none;
-  backdrop-filter: blur(8px);
 }
 
 .scope-tip-head {
@@ -3067,9 +3065,9 @@ select:focus {
     0 18px 46px rgba(0, 0, 0, 0.72),
     0 0 0 1px color-mix(in srgb, var(--agent-sw) 18%, transparent),
     0 0 24px color-mix(in srgb, var(--agent-sw) 16%, transparent);
-  backdrop-filter: blur(10px);
   overflow: hidden;
   user-select: none;
+  contain: layout style;
 }
 
 .agent-pod.is-minimized {

@@ -15,14 +15,25 @@ import {
   AGENT_COLOR_TOKENS,
   AGENT_FORMULAS,
   evaluateAgentSurface,
+  sampleAgentSlice,
 } from "../core/agent.ts";
-import { mixHex, rgba } from "../core/theme.ts";
+import { hexToRgbFast, mixHex, rgba, rgbaMixRgb } from "../core/theme.ts";
 import { clear, el } from "./dom.js";
 import { startTour, stopTour } from "./tour.js";
 
 const SWATCH_TOKENS = ["agent", "ok", "id1", "id2", "id3", "id4", "open", "risk"];
+const POD_SLICES = 18;
+const POD_SAMPLES = 64;
+
+/* Reusable buffers so 60fps Agent Pod frames allocate zero typed arrays or tuples */
+const podFramePool = Array.from({ length: POD_SLICES }, () => new Float32Array(POD_SAMPLES));
+const podScanSlice = new Float32Array(POD_SAMPLES);
+const podProjX = new Float32Array(POD_SAMPLES);
+const podProjY = new Float32Array(POD_SAMPLES);
 
 let podCanvas = null;
+let podCachedW = 0;
+let podCachedH = 0;
 let configOpen = false;
 let podBuilt = false;
 let podClock = 0;
@@ -61,14 +72,25 @@ function tokenHex(tok) {
   return P.agent;
 }
 
+export function invalidateAgentPodSize() {
+  podCachedW = 0;
+  podCachedH = 0;
+}
+
 function fitCanvas(canvas) {
-  const rect = canvas.getBoundingClientRect();
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  const width = Math.max(1, Math.round(rect.width));
-  const height = Math.max(1, Math.round(rect.height));
-  if (canvas.width !== Math.round(width * dpr) || canvas.height !== Math.round(height * dpr)) {
-    canvas.width = Math.round(width * dpr);
-    canvas.height = Math.round(height * dpr);
+  if (podCachedW < 8 || podCachedH < 8) {
+    const rect = canvas.getBoundingClientRect();
+    podCachedW = Math.max(1, Math.round(rect.width));
+    podCachedH = Math.max(1, Math.round(rect.height));
+  }
+  const width = podCachedW;
+  const height = podCachedH;
+  const pxW = Math.round(width * dpr);
+  const pxH = Math.round(height * dpr);
+  if (canvas.width !== pxW || canvas.height !== pxH) {
+    canvas.width = pxW;
+    canvas.height = pxH;
   }
   const g = canvas.getContext("2d");
   g.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -81,7 +103,11 @@ export function drawAgentPodFrame(phaseSec = null) {
   const P = ctx.palette;
   const accent = resolveAgentColor();
   const secondary = mixHex(accent, P.depth, 0.55);
-  const bright = mixHex(accent, P.handle, 0.42);
+  const bright = mixHex(accent, P.handle, 0.48);
+  const core = mixHex(accent, P.handle, 0.78);
+  const accentRgb = hexToRgbFast(accent);
+  const secondaryRgb = hexToRgbFast(secondary);
+  const brightRgb = hexToRgbFast(bright);
   const phase = typeof phaseSec === "number" ? phaseSec : podClock;
 
   const { g, width: w, height: h } = fitCanvas(podCanvas);
@@ -98,9 +124,10 @@ export function drawAgentPodFrame(phaseSec = null) {
   g.fillStyle = grad;
   g.fillRect(0, 0, w, h);
 
-  const sliceCount = 18;
-  const sampleCount = 64;
-  const { frames, scanZ } = evaluateAgentSurface(ctx.agent, phase, sliceCount, sampleCount);
+  const sliceCount = POD_SLICES;
+  const sampleCount = POD_SAMPLES;
+  const { frames, scanZ } = evaluateAgentSurface(ctx.agent, phase, sliceCount, sampleCount, podFramePool);
+  sampleAgentSlice(frames, scanZ, podScanSlice);
 
   /* Isometric mini-stage projection (balanced margins across Z-depth) */
   const padX = 24;
@@ -109,85 +136,138 @@ export function drawAgentPodFrame(phaseSec = null) {
   const baseBottom = h * 0.78;
   const depthLift = h * 0.44;
   const ampScale = h * 0.22;
+  const invS = 1 / (sampleCount - 1);
+  const invZ = 1 / (sliceCount - 1);
 
-  const project = (u, z, val) => {
+  const projectSlice = (z, wave) => {
     const rowW = frontW * (1 - backShrink * z);
     const left = (w - rowW) * 0.5 + (z - 0.5) * (w * 0.04);
-    const x = left + u * rowW;
     const baseY = baseBottom - z * depthLift;
-    const y = baseY - val * ampScale * (1 - 0.34 * z);
-    return [x, y, baseY];
+    const scaleY = ampScale * (1 - 0.34 * z);
+    for (let s = 0; s < sampleCount; s++) {
+      podProjX[s] = left + s * invS * rowW;
+      podProjY[s] = baseY - wave[s] * scaleY;
+    }
+    return { left, right: left + rowW, baseY };
   };
 
   /* Subtle wireframe base deck */
   g.save();
   g.strokeStyle = rgba(P.lineHi, 0.45);
   g.lineWidth = 0.75;
-  const [blx, bly] = project(0, 1, 0);
-  const [brx, bry] = project(1, 1, 0);
-  const [flx, fly] = project(0, 0, 0);
-  const [frx, fry] = project(1, 0, 0);
+  const backW = frontW * (1 - backShrink);
+  const backLeft = (w - backW) * 0.5 + 0.5 * (w * 0.04);
+  const backY = baseBottom - depthLift;
+  const frontLeft = (w - frontW) * 0.5 - 0.5 * (w * 0.04);
   g.beginPath();
-  g.moveTo(blx, bly);
-  g.lineTo(brx, bry);
-  g.lineTo(frx, fry);
-  g.lineTo(flx, fly);
+  g.moveTo(backLeft, backY);
+  g.lineTo(backLeft + backW, backY);
+  g.lineTo(frontLeft + frontW, baseBottom);
+  g.lineTo(frontLeft, baseBottom);
   g.closePath();
   g.stroke();
   g.restore();
 
-  const scanIdx = Math.round(scanZ * (sliceCount - 1));
+  const drawContinuousScanPlane = () => {
+    const { left, right, baseY } = projectSlice(scanZ, podScanSlice);
 
-  /* Paint back-to-front translucent ribbons */
+    /* Translucent luminous curtain underneath the continuous scan slice */
+    g.beginPath();
+    g.moveTo(podProjX[0], podProjY[0]);
+    for (let s = 1; s < sampleCount; s++) g.lineTo(podProjX[s], podProjY[s]);
+    g.lineTo(right, baseY);
+    g.lineTo(left, baseY);
+    g.closePath();
+    g.fillStyle = rgbaMixRgb(accentRgb, brightRgb, 0.35, 0.22);
+    g.fill();
+
+    /* Fast additive bloom (zero shadowBlur!) + crisp bright trace + hot filament core */
+    g.save();
+    g.lineJoin = "round";
+    g.lineCap = "round";
+    g.beginPath();
+    g.moveTo(podProjX[0], podProjY[0]);
+    for (let s = 1; s < sampleCount; s++) g.lineTo(podProjX[s], podProjY[s]);
+
+    g.globalCompositeOperation = "lighter";
+    g.strokeStyle = rgbaMixRgb(accentRgb, brightRgb, 0.4, 0.32);
+    g.lineWidth = 5.2;
+    g.stroke();
+
+    g.globalCompositeOperation = "source-over";
+    g.strokeStyle = bright;
+    g.lineWidth = 1.7;
+    g.stroke();
+
+    g.strokeStyle = rgba(core, 0.85);
+    g.lineWidth = 0.7;
+    g.stroke();
+    g.restore();
+  };
+
+  /* Continuous depth insertion index for the gliding scan plane */
+  const scanInsertIdx = Math.floor(scanZ * (sliceCount - 1));
+  let scanDrawn = false;
+
+  /* Paint back-to-front translucent ribbons with smooth Z-proximity glow falloff */
+  g.save();
+  g.lineJoin = "round";
+  g.lineCap = "round";
+
   for (let i = sliceCount - 1; i >= 0; i--) {
-    const z = sliceCount > 1 ? i / (sliceCount - 1) : 0;
+    const z = i * invZ;
     const wave = frames[i];
-    const isScan = i === scanIdx;
     const isFront = i === 0;
-    const col = mixHex(accent, secondary, z * 0.75);
+    const dz = z - scanZ;
+    /* Smooth Gaussian proximity halo so light flows organically between neighboring slices */
+    const prox = Math.exp(-dz * dz * 70);
+    const { left, right, baseY } = projectSlice(z, wave);
 
     /* Soft ribbon fill */
     g.beginPath();
-    for (let s = 0; s < sampleCount; s++) {
-      const u = s / (sampleCount - 1);
-      const [x, y] = project(u, z, wave[s]);
-      if (s === 0) g.moveTo(x, y);
-      else g.lineTo(x, y);
-    }
-    const [rx, , rBase] = project(1, z, 0);
-    const [lx, , lBase] = project(0, z, 0);
-    g.lineTo(rx, rBase);
-    g.lineTo(lx, lBase);
+    g.moveTo(podProjX[0], podProjY[0]);
+    for (let s = 1; s < sampleCount; s++) g.lineTo(podProjX[s], podProjY[s]);
+    g.lineTo(right, baseY);
+    g.lineTo(left, baseY);
     g.closePath();
-    g.fillStyle = rgba(col, isScan ? 0.24 : isFront ? 0.16 : 0.055 + (1 - z) * 0.05);
+    const fillAlpha = (isFront ? 0.14 : 0.05 + (1 - z) * 0.048) + prox * 0.08;
+    g.fillStyle = rgbaMixRgb(accentRgb, secondaryRgb, z * 0.75 * (1 - prox * 0.5), fillAlpha);
     g.fill();
 
-    /* Crisp harmonic contour stroke */
+    /* Crisp harmonic contour stroke (reuses projected points, zero shadowBlur) */
     g.beginPath();
-    for (let s = 0; s < sampleCount; s++) {
-      const u = s / (sampleCount - 1);
-      const [x, y] = project(u, z, wave[s]);
-      if (s === 0) g.moveTo(x, y);
-      else g.lineTo(x, y);
-    }
-    if (isScan) {
-      g.strokeStyle = bright;
-      g.lineWidth = 1.9;
-      g.shadowColor = rgba(accent, 0.75);
-      g.shadowBlur = 8;
-    } else if (isFront) {
+    g.moveTo(podProjX[0], podProjY[0]);
+    for (let s = 1; s < sampleCount; s++) g.lineTo(podProjX[s], podProjY[s]);
+
+    if (isFront) {
       g.strokeStyle = accent;
-      g.lineWidth = 1.45;
-      g.shadowColor = rgba(accent, 0.45);
-      g.shadowBlur = 4;
+      g.lineWidth = 1.35 + prox * 0.35;
+      g.stroke();
+      g.globalCompositeOperation = "lighter";
+      g.strokeStyle = rgbaMixRgb(accentRgb, brightRgb, prox * 0.5, 0.22 + prox * 0.12);
+      g.lineWidth = 3.4;
+      g.stroke();
+      g.globalCompositeOperation = "source-over";
     } else {
-      g.strokeStyle = rgba(col, 0.28 + (1 - z) * 0.42);
-      g.lineWidth = 0.9;
-      g.shadowBlur = 0;
+      const baseAlpha = 0.26 + (1 - z) * 0.4 + prox * 0.28;
+      g.strokeStyle =
+        prox > 0.08
+          ? rgbaMixRgb(accentRgb, brightRgb, prox * 0.65, Math.min(0.95, baseAlpha))
+          : rgbaMixRgb(accentRgb, secondaryRgb, z * 0.75, baseAlpha);
+      g.lineWidth = 0.85 + prox * 0.55;
+      g.stroke();
     }
-    g.stroke();
-    g.shadowBlur = 0;
+
+    if (!scanDrawn && i <= scanInsertIdx) {
+      drawContinuousScanPlane();
+      scanDrawn = true;
+    }
   }
+
+  if (!scanDrawn) {
+    drawContinuousScanPlane();
+  }
+  g.restore();
 }
 
 export function stepAgentPodClock(phaseSec) {
@@ -467,6 +547,7 @@ export function renderAgentPod() {
     podCanvas.className = "ap-canvas";
     podCanvas.setAttribute("aria-label", `${cfg.name} oscillator (${cfg.formula}, ${cfg.activity})`);
     screen.appendChild(podCanvas);
+    invalidateAgentPodSize();
 
     const metaOverlay = el("div", "ap-screen-meta");
     metaOverlay.appendChild(el("span", "ap-formula-tag", cfg.formula));

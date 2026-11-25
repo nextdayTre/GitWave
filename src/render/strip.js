@@ -37,6 +37,46 @@ function bandWidth() {
   return (host ? host.getBoundingClientRect().width : 960) + 80;
 }
 
+let stripCells = [];
+let stripHost = null;
+
+function ensureStripCells(host) {
+  if (stripHost === host && stripCells.length === SLOT_COUNT && host.childElementCount === SLOT_COUNT) {
+    return stripCells;
+  }
+  clear(host);
+  stripHost = host;
+  stripCells = new Array(SLOT_COUNT);
+  const fragment = document.createDocumentFragment();
+  for (let k = 0; k < SLOT_COUNT; k++) {
+    const cell = document.createElement("button");
+    cell.type = "button";
+    cell.className = "slot";
+    cell.dataset.k = String(k);
+
+    const dateEl = el("span", "slot-date", "");
+    const meter = el("span", "slot-meter");
+    meter.setAttribute("aria-hidden", "true");
+    const ticks = new Array(8);
+    for (let i = 0; i < 8; i++) {
+      const tick = document.createElement("i");
+      meter.appendChild(tick);
+      ticks[i] = tick;
+    }
+    const countEl = el("span", "slot-count", "");
+
+    cell.appendChild(dateEl);
+    cell.appendChild(meter);
+    cell.appendChild(countEl);
+    fragment.appendChild(cell);
+    stripCells[k] = { cell, dateEl, meter, ticks, countEl, lastKey: "" };
+  }
+  host.appendChild(fragment);
+  return stripCells;
+}
+
+const TICK_SHAPE = Array.from({ length: 8 }, (_, i) => Math.sin(((i + 0.5) / 8) * Math.PI));
+
 export function renderStrip() {
   const host = document.getElementById("slots");
   if (!host || !ctx.window || !ctx.view) return;
@@ -50,31 +90,39 @@ export function renderStrip() {
     ctx.view.depth && ctx.metric ? ctx.metric.color : ""
   );
 
-  const focusK = ctx.focusCommit
+  const focusTime = ctx.focusCommit
+    ? ctx.model?.commitTimeBySha?.get(ctx.focusCommit.sha) ?? Date.parse(ctx.focusCommit.time)
+    : Number.NaN;
+  const focusK = Number.isFinite(focusTime)
     ? Math.max(
         0,
         Math.min(
           SLOT_COUNT - 1,
-          Math.floor(
-            (Date.parse(ctx.focusCommit.time) - ctx.window.startMs) / (ctx.window.slotMs || 1)
-          )
+          Math.floor((focusTime - ctx.window.startMs) / (ctx.window.slotMs || 1))
         )
       )
     : -1;
 
-  clear(host);
-  const fragment = document.createDocumentFragment();
+  const cells = ensureStripCells(host);
+  const agentLens = ctx.view.lens.agents;
+
   for (let k = 0; k < SLOT_COUNT; k++) {
     const slot = active[k];
-    const cell = document.createElement("button");
-    cell.type = "button";
-    cell.className = "slot";
-    cell.dataset.k = String(k);
-    cell.dataset.x = slotX(k, geom).toFixed(3);
-    if (slot.count === 0) cell.disabled = true;
-    if (slot.agentCount > 0) cell.classList.add("is-agent");
-    if (ctx.view.lens.agents && slot.agentCount > 0) cell.classList.add("is-agent-lens");
-    if (k === focusK) cell.classList.add("is-focus");
+    const rec = cells[k];
+    const xStr = slotX(k, geom).toFixed(3);
+    const isFocus = k === focusK;
+    const hasAgent = slot.agentCount > 0;
+    const sha6 = slot.count === 1 && slot.newest ? shortSha(slot.newest.sha, 6) : "";
+    const cellKey = `${xStr}|${slot.startMs}|${slot.count}|${slot.churn}|${slot.level}|${slot.agentCount}|${agentLens ? 1 : 0}|${isFocus ? 1 : 0}|${sha6}`;
+    if (rec.lastKey === cellKey) continue;
+    rec.lastKey = cellKey;
+
+    const { cell, dateEl, meter, ticks, countEl } = rec;
+    cell.dataset.x = xStr;
+    cell.disabled = slot.count === 0;
+    cell.classList.toggle("is-agent", hasAgent);
+    cell.classList.toggle("is-agent-lens", agentLens && hasAgent);
+    cell.classList.toggle("is-focus", isFocus);
 
     const label =
       `slot ${k + 1} of ${SLOT_COUNT}, ${dateMedium(slot.startMs)}, ` +
@@ -83,40 +131,32 @@ export function renderStrip() {
     cell.setAttribute("aria-label", label);
     cell.title = slot.count > 0 ? `${label} — click for 3D beacon · double-click for diff` : label;
 
-    cell.appendChild(el("span", "slot-date", dateShort(slot.startMs)));
+    dateEl.textContent = dateShort(slot.startMs);
 
-    const meter = el("span", "slot-meter");
-    meter.setAttribute("aria-hidden", "true");
     const norm = slot.level / 15;
     meter.style.setProperty("--lvl", norm.toFixed(3));
+    const hasCommits = slot.count > 0;
     for (let i = 0; i < 8; i++) {
-      const tick = document.createElement("i");
-      /* Symmetric mini waveform pulse inspired by Ref #3 overview cells */
-      const waveShape = Math.sin(((i + 0.5) / 8) * Math.PI);
-      const hPct = slot.count === 0 ? 6 : Math.max(14, Math.round((0.25 + 0.75 * norm * waveShape) * 100));
+      const tick = ticks[i];
+      const hPct = hasCommits ? Math.max(14, Math.round((0.25 + 0.75 * norm * TICK_SHAPE[i]) * 100)) : 6;
       tick.style.height = `${hPct}%`;
-      if (slot.count > 0) tick.className = "on";
-      meter.appendChild(tick);
+      tick.className = hasCommits ? "on" : "";
     }
-    cell.appendChild(meter);
 
-    const count =
-      slot.count === 1 && slot.newest ? shortSha(slot.newest.sha, 6) : String(slot.count);
-    cell.appendChild(el("span", "slot-count", slot.count === 0 ? "·" : count));
-
-    fragment.appendChild(cell);
+    countEl.textContent = slot.count === 0 ? "·" : slot.count === 1 && sha6 ? sha6 : String(slot.count);
   }
-  host.appendChild(fragment);
 
   const mode = document.getElementById("stripMode");
   if (mode) {
-    mode.textContent = ctx.view.depth
+    const nextMode = ctx.view.depth
       ? `OVERVIEW · ${SLOT_COUNT} SLICES · ${ctx.metric?.label ?? "all"} · DRAG TO SELECT`
       : `OVERVIEW · ${SLOT_COUNT} SLOTS · ${ctx.view.span} · DRAG TO SELECT`;
+    if (mode.textContent !== nextMode) mode.textContent = nextMode;
   }
   const range = document.getElementById("stripRange");
   if (range) {
-    range.textContent = `${dateMedium(ctx.window.startMs)} – ${dateMedium(ctx.window.endMs)} UTC`;
+    const nextRange = `${dateMedium(ctx.window.startMs)} – ${dateMedium(ctx.window.endMs)} UTC`;
+    if (range.textContent !== nextRange) range.textContent = nextRange;
   }
 }
 

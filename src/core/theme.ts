@@ -367,7 +367,11 @@ export function tokenColor(theme: ThemeName, name: keyof ThemeTokens): string {
 
 /* ---- colour maths (done by tests and by the renderers) ------------------- */
 
+const rgbCache = new Map<string, readonly [number, number, number]>();
+
 export function hexToRgb(hex: string): [number, number, number] {
+  const hit = rgbCache.get(hex);
+  if (hit) return [hit[0], hit[1], hit[2]];
   const h = hex.replace("#", "");
   const full =
     h.length === 3
@@ -377,7 +381,17 @@ export function hexToRgb(hex: string): [number, number, number] {
           .join("")
       : h;
   const n = parseInt(full, 16);
-  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  const rgb: [number, number, number] = [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  if (rgbCache.size < 512) rgbCache.set(hex, rgb);
+  return [rgb[0], rgb[1], rgb[2]];
+}
+
+/** Fast cached RGB lookup (do not mutate returned tuple). */
+export function hexToRgbFast(hex: string): readonly [number, number, number] {
+  const hit = rgbCache.get(hex);
+  if (hit) return hit;
+  const rgb = hexToRgb(hex);
+  return rgbCache.get(hex) ?? rgb;
 }
 
 export function rgbToHex(rgb: [number, number, number]): string {
@@ -390,19 +404,33 @@ export function rgbToHex(rgb: [number, number, number]): string {
 }
 
 export function rgba(hex: string, alpha: number): string {
-  const [r, g, b] = hexToRgb(hex);
-  return `rgba(${r},${g},${b},${alpha})`;
+  const rgb = hexToRgbFast(hex);
+  return `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${alpha})`;
 }
 
 export function mixHex(a: string, b: string, t: number): string {
-  const A = hexToRgb(a);
-  const B = hexToRgb(b);
+  const A = hexToRgbFast(a);
+  const B = hexToRgbFast(b);
   const k = Math.max(0, Math.min(1, t));
   return rgbToHex([
     A[0] + (B[0] - A[0]) * k,
     A[1] + (B[1] - A[1]) * k,
     A[2] + (B[2] - A[2]) * k,
   ]);
+}
+
+/** Mix two RGB triples directly into a CSS rgba() string with zero hex round-trip. */
+export function rgbaMixRgb(
+  a: readonly [number, number, number],
+  b: readonly [number, number, number],
+  t: number,
+  alpha: number
+): string {
+  const k = t < 0 ? 0 : t > 1 ? 1 : t;
+  const r = Math.round(a[0] + (b[0] - a[0]) * k);
+  const g = Math.round(a[1] + (b[1] - a[1]) * k);
+  const bl = Math.round(a[2] + (b[2] - a[2]) * k);
+  return `rgba(${r},${g},${bl},${alpha.toFixed(3)})`;
 }
 
 export function relativeLuminance(hex: string): number {

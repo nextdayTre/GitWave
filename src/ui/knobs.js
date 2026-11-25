@@ -120,9 +120,18 @@ export function createKnob(opts) {
   wrap.appendChild(valueEl);
 
   let current = clamp(opts.value ?? 0.5, 0, 1);
+  let lastText = "";
+  let renderedOnce = false;
 
   function renderValue(v, customText) {
-    current = clamp(v, 0, 1);
+    const next = clamp(v, 0, 1);
+    const text = customText ?? (opts.format ? opts.format(next) : `${Math.round(next * 100)}%`);
+    if (renderedOnce && Math.abs(next - current) < 0.0008 && text === lastText) {
+      return;
+    }
+    renderedOnce = true;
+    current = next;
+    lastText = text;
     const endDeg = START_DEG + current * SWEEP_DEG;
     const d = arcPath(cx, cy, r, START_DEG, Math.max(START_DEG + 1, endDeg));
     arc.setAttribute("d", d);
@@ -135,7 +144,6 @@ export function createKnob(opts) {
     tick.setAttribute("x2", outer.x.toFixed(2));
     tick.setAttribute("y2", outer.y.toFixed(2));
 
-    const text = customText ?? (opts.format ? opts.format(current) : `${Math.round(current * 100)}%`);
     valueEl.textContent = text;
     btn.setAttribute("aria-valuenow", String(Math.round(current * 100)));
     btn.setAttribute("aria-valuetext", text);

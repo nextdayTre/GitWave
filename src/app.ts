@@ -185,7 +185,6 @@ export interface AppContext {
   view: View | null;
   window: ReturnType<typeof windowFor> | null;
   slots: Slot[];
-  metricSlots: Slot[];
   metric: Metric | null;
   depthSlices: DepthSlice[];
   depthPhase: number;
@@ -193,6 +192,10 @@ export interface AppContext {
   depthScan: number;
   /** Ambient render clock (seconds) for the fluid 3D surfaces. */
   morph: number;
+  /** Smoothly damped WT POS [0..1] for fluid visual glide without adding latency. */
+  smoothWtPos: number | null;
+  /** True during high-frequency LFO transport ticks to skip rebuilding static panels. */
+  isTransportTick: boolean;
   /** Whether all Rack oscillators scrub WT POS in lockstep with the repo read head. */
   rackSync: boolean;
   /** UI sub-mode when in 3D: 'rack' | 'stage' | 'browser', or '2d' when depth=false. */
@@ -219,9 +222,7 @@ export interface AppContext {
   stageParams: OscParams;
   /** Hovered browser thumbnail query for silky hover-scan feedback. */
   browserHoverQuery: string | null;
-  /** Cached active slice wave + WT POS (0=oldest..1=now) + telemetry. */
-  activeSliceWave: Float32Array | null;
-  activeSliceZ: number;
+  /** Cached active slice telemetry (WT POS 0=oldest..1=now). */
   activeWtPos: number;
   activeSliceCount: number;
   activeSliceChurn: number;
@@ -262,13 +263,14 @@ export const ctx: AppContext = {
   view: null,
   window: null,
   slots: [],
-  metricSlots: [],
   metric: null,
   depthSlices: [],
   depthPhase: 0,
   lfoDir: 1,
   depthScan: -1,
   morph: 0,
+  smoothWtPos: null,
+  isTransportTick: false,
   rackSync: true,
   browserOpen: false,
   diffOpen: false,
@@ -282,8 +284,6 @@ export const ctx: AppContext = {
   oscParams: new Map(),
   stageParams: { pos: null, depth: 0.68, smooth: 0.52 },
   browserHoverQuery: null,
-  activeSliceWave: null,
-  activeSliceZ: 0,
   activeWtPos: 1,
   activeSliceCount: 0,
   activeSliceChurn: 0,
@@ -360,11 +360,16 @@ export function installDocument(doc: RepoDoc, view: View): void {
   ctx.view = view;
   ctx.hoverSlot = -1;
   ctx.prFilter = null;
+  ctx.smoothWtPos = null;
   document.documentElement.dataset.theme = view.theme;
   ctx.palette = readPalette();
   ctx.paletteTheme = view.theme;
   recompute();
 }
+
+let cachedPrsModel: Model | null = null;
+let cachedPrsList: PrView[] = [];
+let cachedPrsMap: Map<string, PrView> = new Map();
 
 export function setView(next: View): void {
   if (!ctx.view) return;
@@ -390,13 +395,17 @@ export function recompute(): void {
   const filterShas = search.shas;
   const ceiling = effectiveCeiling(model, window, filterShas);
   const slots = buildSlots(model, window, filterShas, ceiling);
-  const prs = openPrs(model);
+  if (cachedPrsModel !== model) {
+    cachedPrsModel = model;
+    cachedPrsList = openPrs(model);
+    cachedPrsMap = new Map(cachedPrsList.map((pr) => [pr.ref.id, pr]));
+  }
+  const prs = cachedPrsList;
   const focusRef = model.refsById.get(view.focusRef) ?? null;
   const active = view.modules.find((module) => module.query === view.query) ?? null;
 
   const metricShas = search.shas;
   const metricCeiling = ceiling;
-  const metricSlots = slots;
   const metricColor = active
     ? ctx.palette?.identity[active.colorKey] ?? ctx.palette?.ok ?? "#34d399"
     : ctx.palette?.ok ?? "#34d399";
@@ -407,18 +416,19 @@ export function recompute(): void {
       : "all commits";
 
   const waves: Wave[] = [];
-  for (const id of view.refs) {
-    const ref = model.refsById.get(id);
-    if (!ref) continue;
-    waves.push({ ref, points: refWave(model, ref, window, slots) });
+  if (!view.depth) {
+    for (const id of view.refs) {
+      const ref = model.refsById.get(id);
+      if (!ref) continue;
+      waves.push({ ref, points: refWave(model, ref, window, slots) });
+    }
+    // Branches first, trunk last: the trunk is the spine and stays readable.
+    waves.sort((a, b) => (a.ref.kind === "trunk" ? 1 : 0) - (b.ref.kind === "trunk" ? 1 : 0));
   }
-  // Branches first, trunk last: the trunk is the spine and stays readable.
-  waves.sort((a, b) => (a.ref.kind === "trunk" ? 1 : 0) - (b.ref.kind === "trunk" ? 1 : 0));
 
   ctx.window = window;
   ctx.slots = slots;
   ctx.search = search;
-  ctx.metricSlots = metricSlots;
   ctx.metric = {
     label: metricLabel,
     color: metricColor,
@@ -431,7 +441,7 @@ export function recompute(): void {
   if (!search.count) ctx.matchIndex = -1;
   else ctx.matchIndex = Math.min(ctx.matchIndex, search.count - 1);
   ctx.prs = prs;
-  ctx.prsByRef = new Map(prs.map((pr) => [pr.ref.id, pr]));
+  ctx.prsByRef = cachedPrsMap;
   ctx.waves = waves;
   ctx.focusCommit = view.focusSha ? model.commitBySha.get(view.focusSha) ?? null : null;
   ctx.focusRef = focusRef;
@@ -485,7 +495,7 @@ export function getState() {
   return {
     schemaVersion: 1,
     tool: "gitwave",
-    version: "0.4.0",
+    version: "0.5.0",
     repo: {
       id: ctx.doc.repo.id,
       name: ctx.doc.repo.name,
