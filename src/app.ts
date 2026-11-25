@@ -23,7 +23,108 @@ import { searchCommits } from "./core/search.ts";
 import type { SearchState } from "./core/search.ts";
 import { depthSlices } from "./core/depth.ts";
 import type { DepthSlice } from "./core/depth.ts";
-import type { GitRef, Model, RepoDoc, View } from "./core/types.ts";
+import { defaultAgentConfig, normalizeAgentPatch } from "./core/agent.ts";
+import type { AgentOscConfig, AgentOscPatch } from "./core/agent.ts";
+import { initialTourState } from "./core/tour.ts";
+import type { TourState } from "./core/tour.ts";
+import type { CommitFileChange, GitRef, Model, RepoDoc, View } from "./core/types.ts";
+
+export interface LiveWorkingChange extends CommitFileChange {
+  state?: string;
+}
+
+export interface LiveWorkingFile {
+  code: string;
+  state: string;
+  path: string;
+}
+
+export interface LiveBranchSync {
+  name: string;
+  current: boolean;
+  tip: string;
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+  gone?: boolean;
+  localOnly: boolean;
+}
+
+export interface RepoTreeFolder {
+  name: string;
+  path: string;
+  fileCount: number;
+  dirtyCount: number;
+  sampleFiles: string[];
+}
+
+export interface RepoTreeFile {
+  name: string;
+  path: string;
+  dirty: boolean;
+}
+
+export interface RepoFileTree {
+  totalFiles: number;
+  folders: RepoTreeFolder[];
+  rootFiles: RepoTreeFile[];
+  allFiles?: string[];
+}
+
+export interface FilePreviewState {
+  path: string;
+  loading?: boolean;
+  sizeBytes?: number;
+  lineCount?: number;
+  binary?: boolean;
+  truncated?: boolean;
+  content?: string;
+  error?: string;
+}
+
+export interface LiveSyncState {
+  repoPath: string;
+  repoName: string;
+  headRef: string;
+  remoteUrl: string | null;
+  syncState: string;
+  unborn?: boolean;
+  tree?: RepoFileTree;
+  workingTree: {
+    clean: boolean;
+    dirtyCount: number;
+    staged: number;
+    modified: number;
+    untracked: number;
+    conflicted: number;
+    files: LiveWorkingFile[];
+    changes?: LiveWorkingChange[];
+  };
+  branches: LiveBranchSync[];
+  remoteOnlyBranches: string[];
+  summary: {
+    dirtyCount: number;
+    totalAhead: number;
+    totalBehind: number;
+    unpushedBranches: number;
+    remoteOnlyCount: number;
+  };
+}
+
+export interface LiveRepoSummary {
+  repoPath: string;
+  repoName: string;
+  headRef: string;
+  syncState: string;
+  unborn?: boolean;
+  summary: {
+    dirtyCount: number;
+    totalAhead: number;
+    totalBehind: number;
+    unpushedBranches: number;
+    remoteOnlyCount: number;
+  };
+}
 
 export interface Wave {
   ref: GitRef;
@@ -98,12 +199,16 @@ export interface AppContext {
   browserOpen: boolean;
   /** Full Commit/Diff inspector overlay replacing the Rack/Stage wavetable view. */
   diffOpen: boolean;
-  /** Currently selected file path inside the Commit/Diff inspector (null = show all). */
+  /** Whether the inspector is viewing a committed slice, live Burn Tray, or File/Folder preview. */
+  diffTarget: "commit" | "working-tree" | "file";
+  /** Currently selected file or folder path inside the Diff / File inspector. */
   diffFile: string | null;
+  /** Read-only file preview payload loaded via live companion (null when none). */
+  filePreview: FilePreviewState | null;
   /** Kilohearts left Git tree sidebar visibility. */
   treeOpen: boolean;
   /** Active category in the Kilohearts tree / browser grid. */
-  treeCategory: "all" | "favorites" | "presets" | "branches" | "authors";
+  treeCategory: "all" | "contents" | "favorites" | "presets" | "branches" | "authors";
   /** Favorited filter queries (Kilohearts heart icons). */
   favorites: Set<string>;
   /** Interactive 3D camera angles for the Hero Stage. */
@@ -136,6 +241,18 @@ export interface AppContext {
   seenSnapshotMs: number;
   newCount: number;
   errors: number;
+  /** Floating Agent Oscillator ("Agent Synth Avatar") configuration & live task state. */
+  agent: AgentOscConfig;
+  /** Live Local ↔ GitHub sync radar state (populated by live companion or bridge). */
+  liveSync: LiveSyncState | null;
+  /** Discovered local Git repositories ("Cartridge Shelf"). */
+  liveRepos: LiveRepoSummary[];
+  /** Path of a repository currently being switched to (for subtle visual pending state). */
+  loadingRepo: string | null;
+  /** Callback registered only by localhost live-bridge.js to request repo loads/refreshes. */
+  onLiveAction: ((action: { method: string; params?: Record<string, unknown> }) => void) | null;
+  /** Choreographed Welcome Walkthrough state. */
+  tour: TourState;
   render: () => void;
 }
 
@@ -155,7 +272,9 @@ export const ctx: AppContext = {
   rackSync: true,
   browserOpen: false,
   diffOpen: false,
+  diffTarget: "commit",
   diffFile: null,
+  filePreview: null,
   treeOpen: true,
   treeCategory: "all",
   favorites: new Set(["merged", "ref:agent/refactor-store", "author:maya"]),
@@ -184,8 +303,31 @@ export const ctx: AppContext = {
   seenSnapshotMs: Number.NaN,
   newCount: 0,
   errors: 0,
+  agent: defaultAgentConfig(),
+  liveSync: null,
+  liveRepos: [],
+  loadingRepo: null,
+  onLiveAction: null,
+  tour: initialTourState(),
   render: () => {},
 };
+
+export function setAgent(patch: AgentOscPatch): AgentOscConfig {
+  ctx.agent = normalizeAgentPatch(ctx.agent, patch);
+  requestRender();
+  return ctx.agent;
+}
+
+export function setLiveWorkspace(patch: {
+  sync?: LiveSyncState | null;
+  repos?: LiveRepoSummary[];
+  onAction?: ((action: { method: string; params?: Record<string, unknown> }) => void) | null;
+}): void {
+  if ("sync" in patch) ctx.liveSync = patch.sync ?? null;
+  if (Array.isArray(patch.repos)) ctx.liveRepos = patch.repos;
+  if ("onAction" in patch) ctx.onLiveAction = patch.onAction ?? null;
+  requestRender();
+}
 
 export function getOscParams(query: string): OscParams {
   let params = ctx.oscParams.get(query);
@@ -393,6 +535,17 @@ export function getState() {
       open: ctx.prs.length,
       stale: ctx.prs.filter((pr) => pr.stale).length,
       max: ctx.prs.reduce((max, pr) => Math.max(max, pr.tension), 0),
+    },
+    agent: {
+      id: ctx.agent.id,
+      name: ctx.agent.name,
+      role: ctx.agent.role,
+      formula: ctx.agent.formula,
+      color: ctx.agent.customColor ?? ctx.agent.colorToken,
+      activity: ctx.agent.activity,
+      task: ctx.agent.task,
+      visible: ctx.agent.visible,
+      liveConnected: ctx.agent.liveConnected,
     },
     hash: typeof location !== "undefined" ? location.hash : "",
   };

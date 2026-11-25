@@ -34,6 +34,8 @@ const KEYS = new Set([
   "pr",
   "sha",
   "subject",
+  "path",
+  "file",
   "after",
   "before",
   "kind",
@@ -70,11 +72,20 @@ function refsOf(model: Model, commit: Commit): GitRef[] {
   return out;
 }
 
+function pathsOf(commit: Commit): string[] {
+  if (commit.paths && commit.paths.length) return commit.paths;
+  if (commit.changes && commit.changes.length) return commit.changes.map((c) => c.path);
+  return [];
+}
+
 function textOf(commit: Commit, refs: GitRef[]): string {
   const parts = [commit.subject, commit.author.name, commit.sha];
   for (const ref of refs) {
     parts.push(ref.id, ref.name);
     if (ref.pr) parts.push(ref.pr.title, `#${ref.pr.number}`);
+  }
+  for (const p of pathsOf(commit)) {
+    parts.push(p);
   }
   return parts.join(" ").toLowerCase();
 }
@@ -101,6 +112,12 @@ function matchToken(model: Model, commit: Commit, token: SearchToken): boolean {
       return token.value.length > 0 && commit.sha.startsWith(token.value);
     case "subject":
       return commit.subject.toLowerCase().includes(token.value);
+    case "path":
+    case "file": {
+      if (!token.value) return false;
+      const list = pathsOf(commit);
+      return list.some((p) => p.toLowerCase().includes(token.value));
+    }
     case "kind":
       return commit.author.kind === token.value;
     case "is":
@@ -153,4 +170,71 @@ export function searchLabel(search: SearchState): string {
   if (!search.query) return "";
   if (search.count === 0) return "no matches";
   return `${search.count} match${search.count === 1 ? "" : "es"}`;
+}
+
+export interface ContentGroup {
+  name: string;
+  query: string;
+  kind: "folder" | "file";
+  commits: number;
+  churn: number;
+}
+
+/**
+ * Derive deterministic folder/file content groups from commit paths so real
+ * single-author repos expose their actual codebase modules as wavetables.
+ */
+export function repoContentGroups(model: Model, limit = 16): ContentGroup[] {
+  const dirStats = new Map<string, { commits: Set<string>; churn: number }>();
+  const fileStats = new Map<string, { commits: Set<string>; churn: number }>();
+
+  for (const commit of model.doc.commits) {
+    const list = pathsOf(commit);
+    if (!list.length) continue;
+    const perFileChurn = Math.max(1, Math.round((commit.insertions + commit.deletions) / list.length));
+    for (const rawPath of list) {
+      const clean = rawPath.replace(/\\/g, "/").replace(/^\/+/, "");
+      if (!clean) continue;
+      const slash = clean.indexOf("/");
+      if (slash > 0) {
+        const dir = clean.slice(0, slash);
+        const rec = dirStats.get(dir) ?? { commits: new Set<string>(), churn: 0 };
+        rec.commits.add(commit.sha);
+        rec.churn += perFileChurn;
+        dirStats.set(dir, rec);
+      } else {
+        const rec = fileStats.get(clean) ?? { commits: new Set<string>(), churn: 0 };
+        rec.commits.add(commit.sha);
+        rec.churn += perFileChurn;
+        fileStats.set(clean, rec);
+      }
+    }
+  }
+
+  const out: ContentGroup[] = [];
+  for (const [dir, rec] of dirStats.entries()) {
+    out.push({
+      name: `${dir}/`,
+      query: `path:${dir}/`,
+      kind: "folder",
+      commits: rec.commits.size,
+      churn: rec.churn,
+    });
+  }
+  for (const [file, rec] of fileStats.entries()) {
+    out.push({
+      name: file,
+      query: `path:${file}`,
+      kind: "file",
+      commits: rec.commits.size,
+      churn: rec.churn,
+    });
+  }
+
+  return out
+    .sort((a, b) => {
+      if (a.kind !== b.kind && dirStats.size >= 2) return a.kind === "folder" ? -1 : 1;
+      return b.commits - a.commits || b.churn - a.churn || a.name.localeCompare(b.name);
+    })
+    .slice(0, limit);
 }

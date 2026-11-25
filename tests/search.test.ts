@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { searchCommits } from "../src/core/search.ts";
+import { buildModel, parseDoc } from "../src/core/model.ts";
+import { repoContentGroups, searchCommits } from "../src/core/search.ts";
+import { defaultModules } from "../src/core/view.ts";
 import { loadDemo } from "./fixtures.ts";
 
 test("search: an empty query is not a filter", () => {
@@ -91,4 +93,78 @@ test("search: results are chronological and the query is capped", () => {
   }
   const long = searchCommits(model, "a".repeat(400));
   assert.equal(long.query.length, 120);
+});
+
+test("search: path: token filters commits by touched paths and drives solo-repo content modules", () => {
+  const raw = {
+    schemaVersion: 1,
+    tool: "gitwave",
+    repo: {
+      id: "solo-app",
+      name: "Solo App",
+      defaultRef: "main",
+      snapshotAt: "2026-11-24T12:00:00Z",
+      span: { from: "2026-11-20T12:00:00Z", to: "2026-11-24T12:00:00Z" },
+    },
+    refs: [
+      {
+        id: "main",
+        name: "main",
+        kind: "trunk",
+        base: null,
+        tip: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        createdAt: "2026-11-20T12:00:00Z",
+        mergedAt: null,
+        colorKey: 0,
+        pr: null,
+      },
+    ],
+    commits: [
+      {
+        sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        parents: [],
+        time: "2026-11-20T12:00:00Z",
+        author: { name: "nextdayTre", kind: "human" },
+        agent: null,
+        subject: "init app",
+        insertions: 120,
+        deletions: 0,
+        files: 2,
+        refs: ["main"],
+        merge: false,
+        paths: ["src/app.ts", "README.md"],
+      },
+      {
+        sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        parents: ["bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"],
+        time: "2026-11-24T12:00:00Z",
+        author: { name: "nextdayTre", kind: "human" },
+        agent: null,
+        subject: "add tools",
+        insertions: 80,
+        deletions: 10,
+        files: 1,
+        refs: ["main"],
+        merge: false,
+        paths: ["tools/run.mjs"],
+      },
+    ],
+    tags: [],
+    scale: { churnCeiling: 100, levels: 16 },
+  };
+  const parsed = parseDoc(raw);
+  assert.ok(parsed.ok);
+  const model = buildModel(parsed.doc);
+
+  const srcHit = searchCommits(model, "path:src/");
+  assert.equal(srcHit.count, 1);
+  assert.equal(srcHit.matches[0].sha, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+
+  const groups = repoContentGroups(model);
+  assert.ok(groups.some((g) => g.name === "src/" && g.query === "path:src/"));
+  assert.ok(groups.some((g) => g.name === "tools/" && g.query === "path:tools/"));
+
+  const mods = defaultModules(model);
+  assert.equal(mods[0].name, "All Commits");
+  assert.ok(mods.some((m) => m.query.startsWith("path:")));
 });

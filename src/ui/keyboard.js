@@ -8,6 +8,8 @@ import { cycleTheme, nudgeEnd, nowView, showRef } from "../core/view.ts";
 import { closeHelp, toggleHelp } from "./help.js";
 import { closeTray, toggleTray } from "./tray.js";
 import { closeDiffView } from "./diff.js";
+import { toggleAgentPod } from "./agent-pod.js";
+import { nextTourStep, prevTourStep, stopTour, toggleTourPlay } from "./tour.js";
 import { closeThemeMenu, toggleDepth, togglePlay, toggleTree } from "./controls.js";
 
 function isTyping(target) {
@@ -34,6 +36,10 @@ export function initKeyboard() {
   window.addEventListener("keydown", (event) => {
     if (!ctx.model || !ctx.view) return;
     if (event.key === "Escape") {
+      if (ctx.tour?.active) {
+        stopTour();
+        return;
+      }
       closeHelp();
       closeTray();
       closeThemeMenu();
@@ -76,6 +82,10 @@ export function initKeyboard() {
       setView(cycleTheme(ctx.view));
       return;
     }
+    if (event.key === "a" || event.key === "A") {
+      toggleAgentPod();
+      return;
+    }
     if (event.key === "p" || event.key === "P") {
       toggleTray();
       return;
@@ -83,16 +93,28 @@ export function initKeyboard() {
     if (event.code === "Space") {
       if (isWidget(event.target)) return;
       event.preventDefault();
+      if (ctx.tour?.active) {
+        toggleTourPlay();
+        return;
+      }
       togglePlay();
       return;
     }
     if (event.key === "ArrowLeft") {
       event.preventDefault();
+      if (ctx.tour?.active) {
+        prevTourStep();
+        return;
+      }
       setView(nudgeEnd(ctx.model, ctx.view, -1));
       return;
     }
     if (event.key === "ArrowRight") {
       event.preventDefault();
+      if (ctx.tour?.active) {
+        nextTourStep();
+        return;
+      }
       setView(nudgeEnd(ctx.model, ctx.view, 1));
       return;
     }

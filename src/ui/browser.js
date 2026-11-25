@@ -9,13 +9,18 @@
  */
 
 import { ctx, requestRender, setView } from "../app.ts";
-import { searchCommits } from "../core/search.ts";
+import { isDesktopRuntime } from "../desktop.ts";
+import { repoContentGroups, searchCommits } from "../core/search.ts";
 import { expandModule, focusFirstMatch, pinModule } from "../core/view.ts";
 import { drawModuleSurface, startDepthScan } from "../render/depth.js";
+import { openFileView, openWorkingTreeDiff } from "./diff.js";
 import { announce } from "./status.ts";
 import { clear, el } from "./dom.js";
 
 let browserTiles = [];
+let lastBrowserSig = "";
+let lastTreeSig = "";
+let lastHoverQuery = null;
 const collapsed = new Set();
 
 /** Build the complete catalog of selectable wavetable filters for the loaded repo. */
@@ -23,19 +28,89 @@ export function catalogItems(model) {
   if (!model) return [];
   const items = [];
 
-  /* 1. Presets */
+  /* 1. Presets (hide 0-commit demo presets on real solo repos so dead tiles don't crowd the grid) */
   const presets = [
-    { name: "All Commits", query: "", subtitle: "repository", colorKey: 0, category: "presets", kind: "repo" },
-    { name: "Merge History", query: "merged", subtitle: "integration", colorKey: 0, category: "presets", kind: "merge" },
-    { name: "Agent Activity", query: "agent", subtitle: "automated", colorKey: 3, category: "presets", kind: "agent" },
-    { name: "Merge Commits", query: "merge", subtitle: "merges", colorKey: 1, category: "presets", kind: "merge" },
+    { name: "All Commits", query: "", subtitle: "repository", colorKey: 0, category: "presets", kind: "repo", always: true },
+    { name: "Merge History", query: "merged", subtitle: "integration", colorKey: 0, category: "presets", kind: "merge", always: false },
+    { name: "Agent Activity", query: "agent", subtitle: "automated", colorKey: 3, category: "presets", kind: "agent", always: false },
+    { name: "Merge Commits", query: "merge", subtitle: "merges", colorKey: 1, category: "presets", kind: "merge", always: false },
   ];
   for (const p of presets) {
     const count = p.query ? searchCommits(model, p.query).count : model.doc.commits.length;
-    items.push({ ...p, count });
+    if (p.always || count > 0) {
+      items.push({ ...p, count });
+    }
   }
 
-  /* 2. Branches / Refs */
+  /* 2. Repository Contents (actual folders & files derived from commit paths + live disk tree) */
+  const contentGroups = repoContentGroups(model, 16);
+  const liveTree = ctx.liveSync?.tree;
+  const folderByName = new Map((liveTree?.folders ?? []).map((f) => [f.name, f]));
+  const rootByName = new Map((liveTree?.rootFiles ?? []).map((f) => [f.name, f]));
+  const seenContent = new Set();
+
+  contentGroups.forEach((grp, idx) => {
+    seenContent.add(grp.name);
+    const liveFolder = folderByName.get(grp.name);
+    const liveFile = rootByName.get(grp.name);
+    const fileLabel = liveFolder
+      ? `${liveFolder.fileCount} ${liveFolder.fileCount === 1 ? "file" : "files"}`
+      : grp.kind === "folder"
+        ? "folder"
+        : "file";
+    items.push({
+      name: grp.name,
+      query: grp.query,
+      subtitle: fileLabel,
+      colorKey: (idx + 1) % 6,
+      category: "contents",
+      kind: grp.kind,
+      dirty: Boolean(liveFolder?.dirtyCount || liveFile?.dirty),
+      count: grp.commits,
+    });
+  });
+
+  if (liveTree) {
+    let extraIdx = contentGroups.length;
+    for (const folder of liveTree.folders) {
+      if (seenContent.has(folder.name) || extraIdx >= 18) continue;
+      seenContent.add(folder.name);
+      const query = `path:${folder.path}`;
+      const count = searchCommits(model, query).count;
+      items.push({
+        name: folder.name,
+        query,
+        subtitle: `${folder.fileCount} ${folder.fileCount === 1 ? "file" : "files"}`,
+        colorKey: (extraIdx + 1) % 6,
+        category: "contents",
+        kind: "folder",
+        dirty: folder.dirtyCount > 0,
+        count,
+      });
+      extraIdx += 1;
+    }
+    if (liveTree.folders.length < 3) {
+      for (const rf of liveTree.rootFiles) {
+        if (seenContent.has(rf.name) || extraIdx >= 18) continue;
+        seenContent.add(rf.name);
+        const query = `path:${rf.path}`;
+        const count = searchCommits(model, query).count;
+        items.push({
+          name: rf.name,
+          query,
+          subtitle: "file",
+          colorKey: (extraIdx + 1) % 6,
+          category: "contents",
+          kind: "file",
+          dirty: rf.dirty,
+          count,
+        });
+        extraIdx += 1;
+      }
+    }
+  }
+
+  /* 3. Branches / Refs */
   for (const ref of model.doc.refs) {
     const query = `ref:${ref.id}`;
     const count = searchCommits(model, query).count;
@@ -141,31 +216,28 @@ function makeSvgIcon(kind) {
   return svg;
 }
 
-/** Load an item into the active oscillator / stage without jarring navigation. */
+/**
+ * Navigate to a catalog item WITHOUT silently overwriting Rack oscillators:
+ * - Clicking a file or folder in `Contents` opens the read-only File/Folder
+ *   Preview & History pane (leaving Rack bays 100% untouched).
+ * - Clicking a branch, author, or preset focuses its query cleanly (soloing an
+ *   existing Rack bay if already present, or filtering Stage/Strip/2D).
+ * - Rack oscillators only change via their own `‹ ›` buttons or explicit `+` pin.
+ */
 export function selectCatalogItem(item, opts = {}) {
   if (!ctx.view || !ctx.model) return;
   const openStage = opts.openStage === true;
   const leaveBrowser = opts.leaveBrowser === true;
 
-  let nextView = ctx.view;
-  /* If currently in Rack mode and item isn't in modules yet, load into the currently selected slot */
-  if (nextView.depth && nextView.rack && !ctx.browserOpen) {
-    const existingIdx = nextView.modules.findIndex((m) => m.query === item.query);
-    if (existingIdx < 0) {
-      const activeIdx = Math.max(
-        0,
-        nextView.modules.findIndex((m) => m.query === nextView.query)
-      );
-      const updated = nextView.modules.map((m, idx) =>
-        idx === activeIdx
-          ? { name: item.name, query: item.query, colorKey: item.colorKey }
-          : m
-      );
-      nextView = { ...nextView, modules: updated };
-    }
+  if (item.category === "contents" && !openStage) {
+    openFileView(item.name);
+    return;
   }
 
-  const focused = focusFirstMatch(ctx.model, { ...nextView, query: item.query }, item.query);
+  ctx.diffOpen = false;
+  ctx.diffTarget = "commit";
+
+  const focused = focusFirstMatch(ctx.model, { ...ctx.view, query: item.query }, item.query);
   let finalView = focused.view;
 
   if (openStage) {
@@ -177,24 +249,6 @@ export function selectCatalogItem(item, opts = {}) {
     });
   } else if (leaveBrowser) {
     ctx.browserOpen = false;
-    /* Ensure item is present in rack when coming from browser */
-    if (finalView.depth && finalView.rack) {
-      const has = finalView.modules.some((m) => m.query === item.query);
-      if (!has) {
-        const activeIdx = Math.max(
-          0,
-          finalView.modules.findIndex((m) => m.query === ctx.view?.query)
-        );
-        finalView = {
-          ...finalView,
-          modules: finalView.modules.map((m, idx) =>
-            idx === activeIdx
-              ? { name: item.name, query: item.query, colorKey: item.colorKey }
-              : m
-          ),
-        };
-      }
-    }
   }
 
   ctx.matchIndex = focused.index;
@@ -227,14 +281,209 @@ function toggleFavorite(query) {
   requestRender();
 }
 
+function treeSignature() {
+  return JSON.stringify([
+    ctx.doc?.repo.id ?? "",
+    ctx.doc?.repo.snapshotAt ?? "",
+    ctx.view?.query ?? "",
+    ctx.view?.theme ?? "",
+    ctx.browserOpen,
+    ctx.diffOpen,
+    ctx.diffTarget,
+    ctx.diffFile ?? "",
+    ctx.treeCategory,
+    ctx.favorites.size,
+    [...collapsed].sort(),
+    ctx.liveSync?.repoPath ?? "",
+    ctx.liveSync?.syncState ?? "",
+    ctx.liveSync?.tree?.totalFiles ?? -1,
+    ctx.loadingRepo ?? "",
+    ctx.liveSync?.workingTree?.dirtyCount ?? -1,
+    (ctx.liveSync?.workingTree?.files ?? []).slice(0, 6).map((f) => `${f.code}:${f.path}`),
+    (ctx.liveSync?.branches ?? []).map((b) => `${b.name}:${b.ahead}:${b.behind}:${b.localOnly}`),
+    (ctx.liveRepos ?? []).map((r) => `${r.repoPath}:${r.syncState}:${r.summary?.dirtyCount ?? 0}`),
+  ]);
+}
+
 /** Render the Kilohearts-style collapsible Git Tree sidebar. */
-export function renderTree() {
+export function renderTree(force = false) {
   const host = document.getElementById("gitTreeBody");
   if (!host || !ctx.model || !ctx.view || !ctx.palette) return;
+  const sig = treeSignature();
+  if (!force && sig === lastTreeSig && host.childElementCount > 0) return;
+  lastTreeSig = sig;
   clear(host);
+
+  /* Live Companion: Local Burn Tray ("Uncommitted on Disk") + Cartridge Shelf */
+  if (ctx.liveSync) {
+    const wt = ctx.liveSync.workingTree;
+    const burn = el("div", wt.clean ? "tree-burn is-clean" : wt.conflicted > 0 ? "tree-burn is-risk" : "tree-burn is-dirty");
+    const burnHead = document.createElement("button");
+    burnHead.type = "button";
+    burnHead.className = "tree-burn-head";
+    burnHead.title = "Inspect live uncommitted working-tree files in Diff view";
+    const burnLeft = el("span", "tree-burn-title");
+    burnLeft.appendChild(el("span", "tree-burn-dot"));
+    burnLeft.appendChild(el("span", "", "BURN TRAY"));
+    burnHead.appendChild(burnLeft);
+    burnHead.appendChild(
+      el(
+        "span",
+        "tree-burn-badge",
+        wt.clean ? "clean" : `${wt.dirtyCount} dirty`
+      )
+    );
+    burnHead.addEventListener("click", () => openWorkingTreeDiff());
+    burn.appendChild(burnHead);
+
+    const summaryLine = wt.clean
+      ? `Synced with HEAD (${ctx.liveSync.headRef})`
+      : `${wt.staged} staged · ${wt.modified} mod · ${wt.untracked} new`;
+    burn.appendChild(el("div", "tree-burn-sub", summaryLine));
+
+    if (!wt.clean && wt.files.length) {
+      const fWrap = el("div", "tree-burn-files");
+      for (const f of wt.files.slice(0, 5)) {
+        const fBtn = document.createElement("button");
+        fBtn.type = "button";
+        fBtn.className = "tree-burn-file";
+        fBtn.title = `${f.state}: ${f.path}`;
+        fBtn.appendChild(el("span", "tree-burn-code", f.code));
+        fBtn.appendChild(el("span", "tree-burn-path", f.path));
+        fBtn.addEventListener("click", () => openWorkingTreeDiff(f.path));
+        fWrap.appendChild(fBtn);
+      }
+      if (wt.files.length > 5) {
+        const moreBtn = document.createElement("button");
+        moreBtn.type = "button";
+        moreBtn.className = "tree-burn-more";
+        moreBtn.textContent = `inspect all ${wt.files.length} uncommitted files →`;
+        moreBtn.addEventListener("click", () => openWorkingTreeDiff());
+        fWrap.appendChild(moreBtn);
+      }
+      burn.appendChild(fWrap);
+    }
+    host.appendChild(burn);
+  }
+
+  if (ctx.liveRepos && ctx.liveRepos.length > 0) {
+    const repoGroup = el("div", "tree-group tree-repos");
+    const isCollapsed = collapsed.has("repos");
+    const rHead = document.createElement("button");
+    rHead.type = "button";
+    rHead.className = "tree-folder";
+    rHead.setAttribute("aria-expanded", isCollapsed ? "false" : "true");
+    rHead.appendChild(el("span", "tree-caret", isCollapsed ? "▸" : "▾"));
+    rHead.appendChild(makeSvgIcon("folder"));
+    rHead.appendChild(el("span", "tree-label", "Repositories"));
+    rHead.appendChild(el("span", "tree-count", String(ctx.liveRepos.length)));
+    rHead.addEventListener("click", () => {
+      if (collapsed.has("repos")) collapsed.delete("repos");
+      else collapsed.add("repos");
+      renderTree(true);
+    });
+    if (isDesktopRuntime()) {
+      const headRow = el("div", "tree-folder-bar");
+      headRow.appendChild(rHead);
+      const mountBtn = document.createElement("button");
+      mountBtn.type = "button";
+      mountBtn.className = "tree-pin";
+      mountBtn.textContent = "⊕";
+      mountBtn.title = "Mount another local projects folder";
+      mountBtn.setAttribute("aria-label", "Mount another local projects folder");
+      mountBtn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        ctx.onLiveAction?.({ method: "pickFolder" });
+      });
+      headRow.appendChild(mountBtn);
+      repoGroup.appendChild(headRow);
+    } else {
+      repoGroup.appendChild(rHead);
+    }
+
+    if (!isCollapsed) {
+      const rList = el("div", "tree-list");
+      for (const repo of ctx.liveRepos) {
+        const isCurrent = ctx.liveSync && repo.repoPath === ctx.liveSync.repoPath;
+        const isLoading = ctx.loadingRepo === repo.repoPath;
+        const row = el("div", isCurrent ? "tree-row is-active" : isLoading ? "tree-row is-loading" : "tree-row");
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "tree-item";
+        btn.title = repo.unborn
+          ? `${repo.repoName} (no commits yet)\n${repo.repoPath}`
+          : `${repo.repoName} (${repo.headRef}) — ${repo.syncState}\n${repo.repoPath}`;
+
+        const led = el(
+          "span",
+          repo.unborn
+            ? "tree-repo-led is-muted"
+            : repo.syncState === "conflict"
+              ? "tree-repo-led is-risk"
+              : repo.syncState === "synced"
+                ? "tree-repo-led is-ok"
+                : "tree-repo-led is-warn"
+        );
+        btn.appendChild(led);
+        btn.appendChild(el("span", "tree-item-name", repo.repoName));
+        const tagText = isLoading
+          ? "…"
+          : repo.unborn
+            ? "empty"
+            : repo.summary?.dirtyCount > 0
+              ? `${repo.summary.dirtyCount}d`
+              : repo.summary?.totalAhead > 0
+                ? `↑${repo.summary.totalAhead}`
+                : repo.summary?.totalBehind > 0
+                  ? `↓${repo.summary.totalBehind}`
+                  : repo.syncState === "synced"
+                    ? "ok"
+                    : repo.syncState;
+        btn.appendChild(
+          el(
+            "span",
+            repo.unborn
+              ? "tree-sync-pill"
+              : repo.syncState === "synced"
+                ? "tree-sync-pill is-ok"
+                : "tree-sync-pill is-warn",
+            tagText
+          )
+        );
+        btn.addEventListener("click", () => {
+          if (repo.unborn) {
+            announce(`${repo.repoName} has no commits yet`);
+            return;
+          }
+          if (isCurrent) {
+            if (ctx.diffOpen) {
+              ctx.diffOpen = false;
+              ctx.diffTarget = "commit";
+              requestRender();
+            }
+            announce(`viewing ${repo.repoName}`);
+            return;
+          }
+          ctx.loadingRepo = repo.repoPath;
+          announce(`loading ${repo.repoName}…`);
+          renderTree(true);
+          ctx.onLiveAction?.({ method: "loadRepo", params: { path: repo.repoPath } });
+        });
+        row.appendChild(btn);
+        rList.appendChild(row);
+      }
+      repoGroup.appendChild(rList);
+    }
+    host.appendChild(repoGroup);
+  }
+
+  const branchSyncByName = new Map(
+    (ctx.liveSync?.branches ?? []).map((b) => [b.name, b])
+  );
 
   const items = catalogItems(ctx.model);
   const favItems = items.filter((it) => ctx.favorites.has(it.query));
+  const contentItems = items.filter((it) => it.category === "contents");
   const presetItems = items.filter((it) => it.category === "presets");
   const branchItems = items.filter((it) => it.category === "branches");
   const authorItems = items.filter((it) => it.category === "authors");
@@ -254,6 +503,8 @@ export function renderTree() {
     row.appendChild(el("span", "tree-label", cat.label));
     row.appendChild(el("span", "tree-count", String(cat.count)));
     row.addEventListener("click", () => {
+      ctx.diffOpen = false;
+      ctx.diffTarget = "commit";
       ctx.treeCategory = cat.id;
       ctx.browserOpen = true;
       if (ctx.view && !ctx.view.depth) {
@@ -267,6 +518,9 @@ export function renderTree() {
   host.appendChild(topNav);
 
   const sections = [
+    ...(contentItems.length
+      ? [{ id: "contents", label: "Contents", icon: "folder", list: contentItems }]
+      : []),
     { id: "presets", label: "Presets", icon: "folder", list: presetItems },
     { id: "branches", label: "Branches", icon: "folder", list: branchItems },
     { id: "authors", label: "Authors", icon: "folder", list: authorItems },
@@ -302,9 +556,11 @@ export function renderTree() {
       }
       if (collapsed.has(sec.id)) collapsed.delete(sec.id);
       else collapsed.add(sec.id);
-      renderTree();
+      renderTree(true);
     });
     head.addEventListener("dblclick", () => {
+      ctx.diffOpen = false;
+      ctx.diffTarget = "commit";
       ctx.treeCategory = sec.id;
       ctx.browserOpen = true;
       if (ctx.view && !ctx.view.depth) setView({ ...ctx.view, depth: true });
@@ -315,7 +571,10 @@ export function renderTree() {
     if (!isCollapsed) {
       const list = el("div", "tree-list");
       for (const item of sec.list) {
-        const active = ctx.view.query === item.query;
+        const active =
+          sec.id === "contents"
+            ? ctx.diffOpen && ctx.diffTarget === "file" && ctx.diffFile === item.name
+            : ctx.view.query === item.query;
         const row = el("div", "tree-row");
         if (active) row.classList.add("is-active");
 
@@ -332,6 +591,8 @@ export function renderTree() {
               : ctx.palette.identity[item.colorKey] ?? ctx.palette.ok;
           sw.style.setProperty("--sw", col);
           btn.appendChild(sw);
+        } else if (sec.id === "contents") {
+          btn.appendChild(makeSvgIcon(item.kind === "folder" ? "folder" : "wave"));
         } else if (sec.id === "authors") {
           btn.appendChild(makeSvgIcon(item.kind === "agent" ? "agent" : "user"));
         } else {
@@ -340,14 +601,34 @@ export function renderTree() {
 
         btn.appendChild(el("span", "tree-item-name", item.name));
 
+        if (sec.id === "contents" && item.dirty) {
+          btn.appendChild(el("span", "tree-sync-pill is-warn", "mod"));
+        }
+
         if (item.prTag) {
           const badge = el("span", item.stale ? "tree-pr is-stale" : "tree-pr", item.prTag);
           btn.appendChild(badge);
         }
 
+        if (sec.id === "branches") {
+          const bSync = branchSyncByName.get(item.name);
+          if (bSync) {
+            const deltaText = bSync.localOnly
+              ? "local"
+              : bSync.ahead || bSync.behind
+                ? `${bSync.ahead ? `↑${bSync.ahead}` : ""}${bSync.behind ? `↓${bSync.behind}` : ""}`
+                : "";
+            if (deltaText) {
+              btn.appendChild(el("span", "tree-sync-pill is-warn", deltaText));
+            }
+          }
+        }
+
         btn.appendChild(el("span", "tree-count", String(item.count)));
-        btn.addEventListener("click", () => selectCatalogItem(item));
-        btn.addEventListener("dblclick", () => selectCatalogItem(item, { openStage: true }));
+        btn.addEventListener("click", () => selectCatalogItem(item, { leaveBrowser: true }));
+        if (sec.id !== "contents") {
+          btn.addEventListener("dblclick", () => selectCatalogItem(item, { openStage: true }));
+        }
 
         const pin = document.createElement("button");
         pin.type = "button";
@@ -371,9 +652,18 @@ export function renderTree() {
   }
 }
 
-/** Redraw animated canvases inside the Kilohearts Floating 3D Browser Grid. */
-export function drawBrowserFrames() {
+/** Redraw canvases inside the Kilohearts Floating 3D Browser Grid.
+ *  When `all === false` (ambient loop), only redraw the hovered tile + any tile
+ *  just unhovered so the grid stays silky-smooth with zero frame drops. */
+export function drawBrowserFrames(all = false) {
+  const hover = ctx.browserHoverQuery;
+  const prevHover = lastHoverQuery;
+  lastHoverQuery = hover;
+
   for (const tile of browserTiles) {
+    if (!all && tile.item.query !== hover && tile.item.query !== prevHover) {
+      continue;
+    }
     drawModuleSurface(tile.canvas, tile.item, tile.index, {
       mode: "browser",
       color: tile.color,
@@ -381,10 +671,35 @@ export function drawBrowserFrames() {
   }
 }
 
+function browserSignature(host) {
+  return JSON.stringify([
+    ctx.doc?.repo.id ?? "",
+    ctx.doc?.repo.snapshotAt ?? "",
+    ctx.doc?.commits.length ?? 0,
+    ctx.liveSync?.repoPath ?? "",
+    ctx.liveSync?.tree?.totalFiles ?? -1,
+    ctx.liveSync?.syncState ?? "",
+    ctx.view?.theme ?? "",
+    ctx.view?.span ?? "",
+    ctx.treeCategory,
+    Math.round((host?.clientWidth || 0) / 16),
+    [...ctx.favorites].sort(),
+  ]);
+}
+
 /** Render the Kilohearts Floating 3D Wavetable Browser Grid. */
 export function renderBrowserGrid() {
   const host = document.getElementById("browser");
   if (!host || !ctx.model || !ctx.view || !ctx.palette) return;
+
+  const sig = browserSignature(host);
+  if (sig === lastBrowserSig && browserTiles.length > 0 && host.childElementCount > 0) {
+    for (const tile of browserTiles) {
+      tile.el?.classList.toggle("is-active", ctx.view.query === tile.item.query);
+    }
+    return;
+  }
+  lastBrowserSig = sig;
   clear(host);
   browserTiles = [];
 
@@ -398,7 +713,8 @@ export function renderBrowserGrid() {
         : all.filter((it) => it.category === cat);
 
   const titles = {
-    all: "All Wavetables",
+    all: `${ctx.doc?.repo.name ?? "Repository"} — All Wavetables`,
+    contents: `${ctx.doc?.repo.name ?? "Repository"} — Contents & Files`,
     favorites: "Favorites",
     presets: "Presets",
     branches: "Branches",
@@ -411,14 +727,21 @@ export function renderBrowserGrid() {
   headLeft.appendChild(makeSvgIcon(cat === "favorites" ? "heart-fill" : "folder"));
   const meta = el("div", "browser-head-text");
   meta.appendChild(el("h2", "", titles[cat] ?? "Wavetables"));
-  meta.appendChild(
-    el("p", "", `${filtered.length} ${filtered.length === 1 ? "wavetable" : "wavetables"} · click to load · double-click to inspect`)
-  );
+  const liveTree = ctx.liveSync?.tree;
+  const repoBits = liveTree
+    ? `${ctx.liveSync.headRef} · ${ctx.doc?.commits.length ?? 0} commits · ${liveTree.totalFiles} files on disk · ${ctx.liveSync.syncState}`
+    : `${filtered.length} ${filtered.length === 1 ? "wavetable" : "wavetables"} · click to load · double-click to inspect`;
+  meta.appendChild(el("p", "", repoBits));
   headLeft.appendChild(meta);
   head.appendChild(headLeft);
 
+  const hasContents = all.some((it) => it.category === "contents");
+  const pillIds = hasContents
+    ? ["all", "contents", "favorites", "presets", "branches", "authors"]
+    : ["all", "favorites", "presets", "branches", "authors"];
+
   const pills = el("div", "browser-pills");
-  for (const id of ["all", "favorites", "presets", "branches", "authors"]) {
+  for (const id of pillIds) {
     const p = document.createElement("button");
     p.type = "button";
     p.className = "op browser-pill";
@@ -456,9 +779,13 @@ export function renderBrowserGrid() {
     hit.addEventListener("dblclick", () => selectCatalogItem(item, { openStage: true }));
     hit.addEventListener("pointerenter", () => {
       ctx.browserHoverQuery = item.query;
+      drawBrowserFrames(false);
     });
     hit.addEventListener("pointerleave", () => {
-      if (ctx.browserHoverQuery === item.query) ctx.browserHoverQuery = null;
+      if (ctx.browserHoverQuery === item.query) {
+        ctx.browserHoverQuery = null;
+        drawBrowserFrames(false);
+      }
     });
 
     const caption = el("div", "wt-caption");
@@ -490,12 +817,12 @@ export function renderBrowserGrid() {
         ? ctx.palette.ok
         : ctx.palette.identity[item.colorKey] ?? ctx.palette.ok;
 
-    browserTiles.push({ canvas, item, index, color });
+    browserTiles.push({ el: tile, canvas, item, index, color });
   });
 
   if (!filtered.length) {
     grid.appendChild(el("p", "browser-empty", "No favorites yet — click a heart to pin a wavetable here."));
   } else {
-    drawBrowserFrames();
+    drawBrowserFrames(true);
   }
 }

@@ -18,7 +18,7 @@ import type {
   ViewModule,
 } from "./types.ts";
 import { SLOT_COUNT, SPANS, clamp, isoOf, refTipTime, windowFor } from "./samples.ts";
-import { searchCommits } from "./search.ts";
+import { repoContentGroups, searchCommits } from "./search.ts";
 import type { Slot } from "./samples.ts";
 import { THEME_IDS } from "./theme.ts";
 
@@ -63,13 +63,37 @@ export function trunkOf(model: Model) {
 }
 
 /**
- * The opening rack: integration history, a topical branch, and a person.
- * Every dataset can produce this shape; the demo produces exactly the three
- * cards the instrument is designed around (team / branch / individual).
+ * The opening rack:
+ * - On multi-branch/merged repos (including Orbit Notes): integration history,
+ *   a topical branch, and the top human author on trunk.
+ * - On real solo / unmerged repos with path metadata: replaces empty 0-commit
+ *   merge bays with All Commits + the repo's top active folders/files so every
+ *   personal repository immediately opens with rich, distinct 3D wavetables.
  */
 export function defaultModules(model: Model): ViewModule[] {
-  const modules: ViewModule[] = [{ name: "Merge History", query: "merged", colorKey: 0 }];
+  const hasMerged = searchCommits(model, "merged").count > 0;
   const branches = model.doc.refs.filter((ref) => ref.kind === "branch");
+  const contents = repoContentGroups(model, 6);
+
+  if (!hasMerged && contents.length > 0) {
+    const modules: ViewModule[] = [{ name: "All Commits", query: "", colorKey: 0 }];
+    const branch = branches.find((ref) => ref.id.startsWith("agent/")) ?? branches[0];
+    if (branch) {
+      modules.push({ name: branch.id, query: `ref:${branch.id}`, colorKey: branch.colorKey });
+    }
+    const used = new Set(modules.map((m) => m.colorKey));
+    const paletteOrder = [1, 2, 3, 4, 5, 0];
+    for (const grp of contents) {
+      if (modules.length >= 3) break;
+      if (modules.some((m) => m.query === grp.query)) continue;
+      const colorKey = paletteOrder.find((k) => !used.has(k)) ?? (modules.length % 6);
+      used.add(colorKey);
+      modules.push({ name: grp.name, query: grp.query, colorKey });
+    }
+    return modules.slice(0, 8);
+  }
+
+  const modules: ViewModule[] = [{ name: "Merge History", query: "merged", colorKey: 0 }];
   const branch = branches.find((ref) => ref.id.startsWith("agent/")) ?? branches[0];
   if (branch) {
     modules.push({ name: branch.id, query: `ref:${branch.id}`, colorKey: branch.colorKey });

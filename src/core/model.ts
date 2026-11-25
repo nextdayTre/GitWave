@@ -250,6 +250,19 @@ export function parseDoc(raw: unknown): ParseResult {
       if (!refIds.has(id)) warnings.push(`${where}.refs contains unknown ref "${id}"`);
     }
     commitRefs.set(sha as string, refsHere);
+    let paths: string[] | undefined;
+    if (Array.isArray(c.paths)) {
+      const seenPaths = new Set<string>();
+      const parsedPaths: string[] = [];
+      for (const item of c.paths) {
+        const p = asString(item);
+        if (!p || seenPaths.has(p)) continue;
+        seenPaths.add(p);
+        parsedPaths.push(p.slice(0, 260));
+        if (parsedPaths.length >= 120) break;
+      }
+      if (parsedPaths.length) paths = parsedPaths;
+    }
     let changes: CommitFileChange[] | undefined;
     if (Array.isArray(c.changes)) {
       const parsedChanges: CommitFileChange[] = [];
@@ -287,6 +300,7 @@ export function parseDoc(raw: unknown): ParseResult {
       files: files as number,
       refs: refsHere,
       merge: asBool(c.merge),
+      ...(paths ? { paths } : {}),
       ...(changes ? { changes } : {}),
     });
   }

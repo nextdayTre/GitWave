@@ -71,6 +71,11 @@
   <div class="header-actions">
     <button class="op sr-toggle" id="depthBtn" type="button" aria-pressed="false" hidden
             title="Toggle 3D mode (D)">3D</button>
+    <button class="op agent-trigger" id="agentBtn" type="button" aria-pressed="false"
+            title="Toggle Floating Agent Oscillator avatar (A)">
+      <span class="agent-btn-dot" aria-hidden="true"></span>
+      <span>agent</span>
+    </button>
     <button class="op theme-trigger" id="themeBtn" type="button" aria-haspopup="menu" aria-expanded="false"
             title="Colour theme (T cycles)">
       <span class="theme-trigger-dot" id="themeDot"></span>
@@ -260,6 +265,9 @@
   </main>
 </div>
 
+<aside class="tour-card" id="tourCard" hidden aria-label="Welcome walkthrough"></aside>
+<aside class="agent-pod" id="agentPod" hidden aria-label="Floating agent oscillator"></aside>
+
 <aside class="help-panel" id="helpPanel" hidden aria-label="Help">
   <button class="op op-xs help-close" id="helpClose" type="button" aria-label="Close help">×</button>
   <div class="help-tabs" role="tablist" aria-label="Help sections">
@@ -282,6 +290,7 @@
       <dt>Space</dt><dd>play or pause the LFO transport</dd>
       <dt>Alt+1…8</dt><dd>focus a visible ref by slot</dd>
       <dt>T</dt><dd>cycle the colour theme</dd>
+      <dt>A</dt><dd>toggle the floating Agent Oscillator avatar</dd>
       <dt>P</dt><dd>open or close the pull-request tray</dd>
       <dt>Esc</dt><dd>close a menu, the tray or help</dd>
       <dt>?</dt><dd>this panel</dd>

@@ -6,9 +6,8 @@ LFO transport, an amber tension vector for open pull requests, and a **3D oscill
 where every saved filter is its own small surface with author/ref splits and visual search.
 It is the sister of BitWave, not a fork: it imports nothing from it and shares no package.
 
-**Status: v0.4.0 — the instrument + visual search rack.** The data is the bundled demo.
-There is **no `window.gitwave`, no CLI, no MCP server and no manifest yet.** Do not describe
-those as working. The read-only stance is real and enforced.
+**Status: v0.5.0 — instrument + visual search rack + read-only Agent Bridge & Floating Agent Oscillator.**
+The standalone `gitwave.html` remains single-file, offline, and zero-network (with the bundled demo and `window.gitwave` in-page bridge). Local live sync (`tools/live-server.mjs`), the Node CLI (`tools/gitwave-cli.mjs`), and the MCP stdio server (`tools/mcp-server.mjs`) run locally on top of the exact same `src/core/*` implementation. The read-only stance on Git is real and enforced.
 
 ## Quick start
 
@@ -65,17 +64,28 @@ Full mapping: [docs/GIT-MODEL.md](docs/GIT-MODEL.md). Visual contract:
 | `src/core/theme.ts` | nine synth palettes; the CSS is tested against it |
 | `src/core/view.ts` | pure view transitions + the transport step |
 | `src/core/share.ts` | `#gw=` codec (view only, never the dataset) |
+| `src/core/agent.ts` | pure Floating Agent Oscillator synthesis & activity modulations |
+| `src/core/tools.ts` | pure read-only tool queries (`repoSummary`, `listRefs`, `search`, `commitDetail`, `tension`, `compare`) |
 | `src/app.ts` | runtime context, derived frame, hidden state |
+| `src/bridge.ts` | zero-network `window.gitwave` in-page bridge |
 | `src/render/depth.js` | true 3D isometric volumetric wavetable engine + paired 2D oscilloscope |
 | `src/render/rack.js` | Serum-style 3D oscillator rack with source cycling and rotary knobs |
 | `src/render/` | canvas, strip overview filmstrip, tension pad, readout |
+| `src/ui/agent-pod.js` | draggable Floating Agent Oscillator avatar & signature tuner |
 | `src/ui/browser.js` | Kilohearts Git source tree sidebar + borderless floating 3D browser grid |
 | `src/ui/knobs.js` | tactile Warpenter/Serum SVG rotary knob widget |
 | `src/ui/` | controls, legend, tray, help, keyboard, clipboard |
 | `src/data/demo.gitwave.json` | the bundled deterministic history |
+| `tools/lib/git-snapshot.mjs` | shared read-only local Git/GitHub snapshot & sync radar engine |
+| `tools/live-server.mjs` | localhost live companion server (SSE bridge, repo watcher, multi-repo sync HUD) |
+| `tools/mcp-server.mjs` | zero-dependency MCP stdio server (9 read-only + visual steering + agent oscillator tools) |
+| `tools/gitwave-cli.mjs` | Node CLI over the same core & live steering bridge |
 | `tools/make-demo.mjs` | the fixture generator (`--check` gates it) |
 | `tools/verify.mjs` | headless state/alignment/link/screenshot checks |
 | `docs/DEMO.md` | the Orbit Notes story and how to replace it |
+| `docs/HANDOFF.md` | current v0.5.0 status, desktop build commands, and session handoff roadmap |
+| `src-tauri/` | cross-platform Tauri 2 + Rust desktop shell (Windows/macOS/Linux) + built-in Agent Bridge |
+| `.github/workflows/desktop-release.yml` | GitHub Actions CI building Windows + macOS (Apple Silicon & Intel) desktop releases |
 
 ## Rules
 

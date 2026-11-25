@@ -8,15 +8,21 @@
     "dev": "vite",
     "build": "vite build && node tools/build-artifact.mjs",
     "typecheck": "tsc -p tsconfig.core.json --noEmit",
-    "test": "node --test --test-isolation=none --test-concurrency=1 tests/model.test.ts tests/slots.test.ts tests/refs.test.ts tests/theme.test.ts tests/view.test.ts tests/share.test.ts tests/search.test.ts tests/depth.test.ts tests/split.test.ts tests/wavetable.test.ts tests/fixture.test.ts",
+    "test": "node --test --test-isolation=none --test-concurrency=1 tests/model.test.ts tests/slots.test.ts tests/refs.test.ts tests/theme.test.ts tests/view.test.ts tests/share.test.ts tests/search.test.ts tests/depth.test.ts tests/split.test.ts tests/wavetable.test.ts tests/agent.test.ts tests/tools.test.ts tests/tour.test.ts tests/fixture.test.ts",
     "demo": "node tools/make-demo.mjs",
     "demo:check": "node tools/make-demo.mjs --check",
-    "verify": "node tools/verify.mjs"
+    "verify": "node tools/verify.mjs",
+    "live": "node tools/live-server.mjs",
+    "mcp": "node tools/mcp-server.mjs",
+    "cli": "node tools/gitwave-cli.mjs",
+    "desktop:dev": "tauri dev",
+    "desktop:build": "tauri build"
   },
   "engines": {
     "node": ">=23.6"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2.12.6",
     "typescript": "^7.0.2",
     "vite": "^8.3.8",
     "vite-plugin-singlefile": "^2.3.4"

@@ -93,6 +93,7 @@ test("theme: the canvas renderers introduce no ad-hoc hues", () => {
     "../src/render/tension.js",
     "../src/render/depth.js",
     "../src/render/rack.js",
+    "../src/ui/agent-pod.js",
   ]) {
     const source = readFileSync(new URL(file, import.meta.url), "utf8");
     assert.ok(!/#[0-9a-fA-F]{3,8}\b/.test(source), `${file} contains a hex colour`);

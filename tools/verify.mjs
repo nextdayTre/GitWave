@@ -254,6 +254,20 @@ if (spawnState) {
   );
 }
 
+const agentRun = runChrome({
+  query:
+    "?fresh&static=1&agent=1&agentName=Antigravity&agentFormula=chebyshev&agentColor=%2322d3ee&agentActivity=searching&agentTask=Tracing+local+vs+GitHub+sync",
+  dump: true,
+});
+const agentState = extractPre(agentRun.html, "gitwave-state");
+check("agent oscillator state present", Boolean(agentState?.agent));
+if (agentState?.agent) {
+  check("agent oscillator is visible", agentState.agent.visible === true);
+  check("agent oscillator keeps formula", agentState.agent.formula === "chebyshev", `formula=${agentState.agent.formula}`);
+  check("agent oscillator keeps activity", agentState.agent.activity === "searching", `activity=${agentState.agent.activity}`);
+  check("agent oscillator keeps color", agentState.agent.color === "#22d3ee", `color=${agentState.agent.color}`);
+}
+
 /* ---- 4. screenshots ------------------------------------------------------ */
 
 mkdirSync(SHOTS, { recursive: true });
@@ -276,6 +290,11 @@ const shots = [
   ["depth.png", "?fresh&depth=1&rack=0&static=1"],
   ["diff.png", "?fresh&diff=1&static=1"],
   ["search.png", "?fresh&depth=1&query=author:maya&static=1"],
+  [
+    "agent-pod.png",
+    "?fresh&depth=1&static=1&agent=1&agentName=Antigravity&agentFormula=lissajous&agentColor=%2322d3ee&agentActivity=searching&agentTask=Tracing+local+%E2%86%94+GitHub+sync",
+  ],
+  ["tour.png", "?fresh&static=1&tour=1"],
 ];
 for (const [name, query] of shots) {
   const target = join(SHOTS, name);

@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <radialGradient id="glow" cx="50%" cy="54%" r="54%">
+      <stop offset="0%" stop-color="#34d399" stop-opacity="0.34"/>
+      <stop offset="55%" stop-color="#2eead8" stop-opacity="0.11"/>
+      <stop offset="100%" stop-color="#07090d" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="waveFront" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#34d399"/>
+      <stop offset="52%" stop-color="#2eead8"/>
+      <stop offset="100%" stop-color="#38bdf8"/>
+    </linearGradient>
+    <linearGradient id="waveMid" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.72"/>
+      <stop offset="100%" stop-color="#a78bfa" stop-opacity="0.72"/>
+    </linearGradient>
+  </defs>
+  <rect x="40" y="40" width="944" height="944" rx="220" fill="#07090d" stroke="#1b2230" stroke-width="18"/>
+  <rect x="40" y="40" width="944" height="944" rx="220" fill="url(#glow)"/>
+  <!-- Back wavetable slices -->
+  <path d="M180 430 C270 320, 355 495, 455 375 C555 255, 650 470, 745 355 C790 300, 825 360, 850 380"
+        fill="none" stroke="#4f46e5" stroke-opacity="0.52" stroke-width="24" stroke-linecap="round"/>
+  <path d="M168 505 C262 365, 355 570, 460 440 C565 310, 660 545, 760 420 C804 365, 835 425, 860 448"
+        fill="none" stroke="url(#waveMid)" stroke-width="30" stroke-linecap="round"/>
+  <!-- Front glowing wavetable trace -->
+  <path d="M150 590 C252 410, 354 670, 470 505 C586 340, 682 630, 786 485 C828 426, 852 486, 876 516"
+        fill="none" stroke="url(#waveFront)" stroke-width="46" stroke-linecap="round"/>
+  <!-- Amber read-head playhead dot -->
+  <circle cx="786" cy="485" r="40" fill="#07090d" stroke="#f5b544" stroke-width="22"/>
+  <circle cx="786" cy="485" r="14" fill="#f5b544"/>
+</svg>

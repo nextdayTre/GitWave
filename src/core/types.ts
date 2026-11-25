@@ -78,6 +78,8 @@ export interface Commit {
   files: number;
   refs: string[];
   merge: boolean;
+  /** Optional list of file paths touched by this commit (enables `path:` filters & folder wavetables). */
+  paths?: string[];
   /** Optional file-level diffs when exported with patch data. */
   changes?: CommitFileChange[];
 }

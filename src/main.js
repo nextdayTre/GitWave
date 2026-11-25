@@ -12,8 +12,11 @@ import {
   loadDemoDocument,
   recompute,
   registerRender,
+  setAgent,
   setView,
 } from "./app.ts";
+import { installBridge } from "./bridge.ts";
+import { initDesktopBridge } from "./desktop.ts";
 import { buildModel } from "./core/model.ts";
 import { decodeView, readFragment, shareFragment } from "./core/share.ts";
 import { defaultView, focusFirstMatch, transportStep, validateView } from "./core/view.ts";
@@ -35,6 +38,8 @@ import { initHelp, openHelp } from "./ui/help.js";
 import { initControls, syncControls, syncStageKnobsLive } from "./ui/controls.js";
 import { drawBrowserFrames, renderBrowserGrid, renderTree } from "./ui/browser.js";
 import { renderDiffView } from "./ui/diff.js";
+import { initAgentPod, renderAgentPod, stepAgentPodClock } from "./ui/agent-pod.js";
+import { renderTourCard, startTour } from "./ui/tour.js";
 import { initKeyboard } from "./ui/keyboard.js";
 import { announce } from "./ui/status.ts";
 
@@ -131,6 +136,19 @@ function boot() {
     bootMatch = focused.index;
   }
   if (staticMode) ctx.morph = 4.2 + phaseParam;
+  if (params.has("agent")) {
+    setAgent({
+      visible: params.get("agent") !== "0",
+      name: params.get("agentName") || undefined,
+      formula: params.get("agentFormula") || undefined,
+      color: params.get("agentColor") || undefined,
+      activity: params.get("agentActivity") || undefined,
+      task: params.get("agentTask") || undefined,
+      repo: doc.repo.name,
+    });
+  } else {
+    ctx.agent = { ...ctx.agent, repo: doc.repo.name };
+  }
   installDocument(doc, view);
   ctx.reducedMotion =
     typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -188,8 +206,13 @@ let ambientRunning = false;
 let ambientStart = 0;
 let ambientLast = 0;
 
+function needsAmbientLoop() {
+  const agentActive = ctx.agent.visible && !ctx.agent.minimized;
+  return Boolean(ctx.view?.depth || agentActive);
+}
+
 function ensureAmbient() {
-  if (!ctx.view?.depth || staticMode || ctx.reducedMotion) {
+  if (!needsAmbientLoop() || staticMode || ctx.reducedMotion) {
     ambientRunning = false;
     return;
   }
@@ -201,14 +224,17 @@ function ensureAmbient() {
 }
 
 function ambientFrame(now) {
-  if (!ctx.view?.depth) {
+  if (!needsAmbientLoop()) {
     ambientRunning = false;
     return;
   }
   ctx.morph = (now - ambientStart) / 1000 + phaseParam;
   if (ctx.depthScan >= 0 && now - ctx.depthScan >= 750) ctx.depthScan = -1;
-  if (ctx.diffOpen) {
-    /* Pause 3D canvas redraws while reading commits/diffs */
+  if (ctx.agent.visible && !ctx.agent.minimized) {
+    stepAgentPodClock(ctx.morph);
+  }
+  if (!ctx.view?.depth || ctx.diffOpen) {
+    /* Pause 3D stage canvas redraws while in 2D or reading commits/diffs */
   } else if (ctx.browserOpen) {
     if (now - ambientLast >= 33) {
       drawBrowserFrames();
@@ -319,6 +345,11 @@ function renderAll() {
   renderReadout();
   renderLegend();
   renderTray();
+  renderAgentPod();
+  renderTourCard();
+  if (staticMode && ctx.agent.visible && !ctx.agent.minimized) {
+    stepAgentPodClock(ctx.morph);
+  }
   syncControls();
   updateMirrors();
   ensureLfo();
@@ -390,12 +421,19 @@ try {
   initTray();
   initHelp();
   initControls();
+  initAgentPod();
   initKeyboard();
+  installBridge();
   registerRender(renderAll);
   renderAll();
+  initDesktopBridge();
   document.body.dataset.ready = "true";
   if (params.has("help")) openHelp();
   if (params.has("menu")) document.getElementById("themeBtn")?.click();
+  if (params.has("tour") && params.get("tour") !== "0") {
+    const idx = Number(params.get("chapter")) || 0;
+    startTour({ index: idx, autoplay: !staticMode });
+  }
   if (selftest) runSelftest();
 
   window.addEventListener("resize", () => {
